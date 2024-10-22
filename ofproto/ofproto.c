@@ -298,6 +298,9 @@ static void meter_insert_rule(struct rule *);
 /* unixctl. */
 static void ofproto_unixctl_init(void);
 
+static int ofproto_convert_flow_cmd_to_dpif_type(int command);
+
+
 /* All registered ofproto classes, in probe order. */
 static const struct ofproto_class **ofproto_classes;
 static size_t n_ofproto_classes;
@@ -453,7 +456,8 @@ ofproto_enumerate_types(struct sset *types)
 const char *
 ofproto_normalize_type(const char *type)
 {
-    return type && type[0] ? type : "system";
+    //return type && type[0] ? type : "system";
+    return type && type[0] ? type : "sonic";
 }
 
 /* Clears 'names' and enumerates the names of all known created ofprotos with
@@ -6295,6 +6299,7 @@ handle_flow_mod(struct ofconn *ofconn, const struct ofp_header *oh)
     struct ofputil_flow_mod fm;
     uint64_t ofpacts_stub[1024 / 8];
     struct ofpbuf ofpacts;
+    struct match match;
     enum ofperr error;
 
     error = reject_secondary_controller(ofconn);
@@ -6305,12 +6310,17 @@ handle_flow_mod(struct ofconn *ofconn, const struct ofp_header *oh)
     ofpbuf_use_stub(&ofpacts, ofpacts_stub, sizeof ofpacts_stub);
     error = ofputil_decode_flow_mod(&fm, oh, ofconn_get_protocol(ofconn),
                                     ofproto_get_tun_tab(ofproto),
-                                    &ofproto->vl_mff_map, &ofpacts,
+                                    &ofproto->vl_mff_map, &ofpacts, &match,
                                     u16_to_ofp(ofproto->max_ports),
                                     ofproto->n_tables);
     if (!error) {
         struct openflow_mod_requester req = { ofconn, oh };
         error = handle_flow_mod__(ofproto, &fm, &req);
+
+        if (!error) {
+            int type = ofproto_convert_flow_cmd_to_dpif_type(fm.command);
+            ofproto->ofproto_class->flow_mod_impl(ofproto, type, &fm, &match, &ofpacts);
+        }
         minimatch_destroy(&fm.match);
     }
 
@@ -8209,6 +8219,27 @@ ofproto_flow_mod_revert(struct ofproto *ofproto, struct ofproto_flow_mod *ofm)
     rule_collection_destroy(&ofm->new_rules);
 }
 
+static int
+ofproto_convert_flow_cmd_to_dpif_type(int command)
+{
+    switch (command) {
+        case OFPFC_ADD:
+            return FLOW_IMPL_ADD;
+
+        case OFPFC_MODIFY:
+        case OFPFC_MODIFY_STRICT:
+            return FLOW_IMPL_MODIFY;
+
+        case OFPFC_DELETE:
+        case OFPFC_DELETE_STRICT:
+            return FLOW_IMPL_DELETE;
+
+        default:
+            break;
+    }
+    return -1;
+}
+
 static enum ofperr
 ofproto_flow_mod_finish(struct ofproto *ofproto, struct ofproto_flow_mod *ofm,
                         const struct openflow_mod_requester *req)
@@ -8546,11 +8577,12 @@ handle_bundle_add(struct ofconn *ofconn, const struct ofp_header *oh)
         error = ofputil_decode_port_mod(badd.msg, &bmsg->opm.pm, false);
     } else if (type == OFPTYPE_FLOW_MOD) {
         struct ofputil_flow_mod fm;
+        struct match match;
 
         error = ofputil_decode_flow_mod(&fm, badd.msg,
                                         ofconn_get_protocol(ofconn),
                                         ofproto_get_tun_tab(ofproto),
-                                        &ofproto->vl_mff_map, &ofpacts,
+                                        &ofproto->vl_mff_map, &ofpacts, &match,
                                         u16_to_ofp(ofproto->max_ports),
                                         ofproto->n_tables);
         if (!error) {

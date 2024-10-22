@@ -85,6 +85,10 @@ static void rule_get_stats(struct rule *, struct pkt_stats *stats,
 static struct rule_dpif *rule_dpif_cast(const struct rule *);
 static void rule_expire(struct rule_dpif *, long long now);
 
+static void flow_mod_impl(const struct ofproto *ofproto_, int type,
+        const struct ofputil_flow_mod *fm, struct match *match, struct ofpbuf *ofpacts);
+
+
 struct ofbundle {
     struct hmap_node hmap_node; /* In struct ofproto's "bundles" hmap. */
     struct ofproto_dpif *ofproto; /* Owning ofproto. */
@@ -511,7 +515,7 @@ type_run(const char *type)
         udpif_revalidate(backer->udpif);
     }
 
-    process_dpif_port_changes(backer);
+    //sonic not handle: process_dpif_port_changes(backer);
     ct_zone_timeout_policy_sweep(backer);
 
     return 0;
@@ -4831,6 +4835,76 @@ rule_get_stats(struct rule *rule_, struct pkt_stats *stats,
     ovs_mutex_unlock(&rule->stats_mutex);
 }
 
+/* direct set flow to dpif
+ * type: enum FLOW_IMPL_ENUM flow_impl_type
+ */
+static void
+flow_mod_impl(const struct ofproto *ofproto_, int type,
+        const struct ofputil_flow_mod *fm, struct match *match, struct ofpbuf *ofpacts)
+{
+    struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
+    struct dpif_backer *backer = ofproto->backer;
+    struct dpif *dpif = backer->dpif;
+    size_t n_ops = 1; //set one flow everytime
+    struct dpif_op *opp;
+    struct dpif_op op;
+    struct ofpbuf key;
+    struct ofpbuf mask;
+    struct ofpbuf action;
+    //ovs_u128 ufid = 0;
+
+    if (0 != strcmp(ofproto_->type, "sonic")) {
+        return; //only set flow to dpif if type is sonic
+    }
+    ofpbuf_init(&key, 0);
+    ofpbuf_init(&mask, 0);
+    ofpbuf_init(&action, 0);
+
+    struct odp_flow_key_parms odp_parms = {
+        .flow = &match->flow,
+        .mask = &match->wc.masks,
+    };
+
+    odp_flow_key_from_flow(&odp_parms, &key);
+    //odp_flow_key_hash(key.data, key.size, &ufid);
+    odp_flow_key_from_mask(&odp_parms, &mask);
+
+    if (FLOW_IMPL_DELETE == type) {
+        op.type = DPIF_OP_FLOW_DEL;
+        op.flow_del.key = key.data;
+        op.flow_del.key_len = key.size;
+        op.flow_del.ufid = NULL;
+        op.flow_del.pmd_id = PMD_ID_NULL;
+        op.flow_del.stats = NULL;
+        op.flow_del.terse = false;
+    } else {
+        odp_flow_action_from_action(ofpacts, &action);
+        op.type = DPIF_OP_FLOW_PUT;
+
+        if (FLOW_IMPL_ADD == type) {
+            op.flow_put.flags = DPIF_FP_CREATE;
+        } else {
+            op.flow_put.flags = DPIF_FP_MODIFY;
+        }
+        op.flow_put.key = key.data;
+        op.flow_put.key_len = key.size;
+        op.flow_put.mask = (mask.size == 0 ? NULL : mask.data);
+        op.flow_put.mask_len = mask.size;
+        op.flow_put.actions = action.data;
+        op.flow_put.actions_len = action.size;
+        op.flow_put.ufid = NULL;
+        op.flow_put.pmd_id = PMD_ID_NULL;
+        op.flow_put.stats = NULL;
+    }
+
+    opp = &op;
+
+    dpif_operate(dpif, &opp, n_ops, DPIF_OFFLOAD_AUTO);
+    ofpbuf_uninit(&action);
+    ofpbuf_uninit(&mask);
+    ofpbuf_uninit(&key);
+}
+
 struct ofproto_dpif_packet_out {
     struct xlate_cache xcache;
     struct ofpbuf odp_actions;
@@ -6865,6 +6939,7 @@ const struct ofproto_class ofproto_dpif_class = {
     rule_destruct,
     rule_dealloc,
     rule_get_stats,
+    flow_mod_impl,
     packet_xlate,
     packet_xlate_revert,
     packet_execute_prepare,

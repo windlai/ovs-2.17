@@ -121,6 +121,7 @@ enum ofperr ofputil_decode_flow_mod(struct ofputil_flow_mod *,
                                     const struct tun_table *,
                                     const struct vl_mff_map *,
                                     struct ofpbuf *ofpacts,
+                                    struct match *match,
                                     ofp_port_t max_port,
                                     uint8_t max_table);
 struct ofpbuf *ofputil_encode_flow_mod(const struct ofputil_flow_mod *,

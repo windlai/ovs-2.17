@@ -151,11 +151,12 @@ ofputil_decode_flow_mod(struct ofputil_flow_mod *fm,
                         const struct tun_table *tun_table,
                         const struct vl_mff_map *vl_mff_map,
                         struct ofpbuf *ofpacts,
+                        struct match *match,
                         ofp_port_t max_port, uint8_t max_table)
 {
     ovs_be16 raw_flags;
     enum ofperr error;
-    struct match match;
+    //struct match match;
     struct ofpbuf b = ofpbuf_const_initializer(oh, ntohs(oh->length));
     enum ofpraw raw = ofpraw_pull_assert(&b);
     if (raw == OFPRAW_OFPT11_FLOW_MOD) {
@@ -164,7 +165,7 @@ ofputil_decode_flow_mod(struct ofputil_flow_mod *fm,
 
         ofm = ofpbuf_pull(&b, sizeof *ofm);
 
-        error = ofputil_pull_ofp11_match(&b, tun_table, vl_mff_map, &match,
+        error = ofputil_pull_ofp11_match(&b, tun_table, vl_mff_map, match,
                                          NULL);
         if (error) {
             return error;
@@ -232,8 +233,8 @@ ofputil_decode_flow_mod(struct ofputil_flow_mod *fm,
             ofm = ofpbuf_pull(&b, sizeof *ofm);
 
             /* Translate the rule. */
-            ofputil_match_from_ofp10_match(&ofm->match, &match);
-            ofputil_normalize_match(&match);
+            ofputil_match_from_ofp10_match(&ofm->match, match);
+            ofputil_normalize_match(match);
 
             /* OpenFlow 1.0 says that exact-match rules have to have the
              * highest possible priority. */
@@ -260,7 +261,7 @@ ofputil_decode_flow_mod(struct ofputil_flow_mod *fm,
             /* Dissect the message. */
             nfm = ofpbuf_pull(&b, sizeof *nfm);
             error = nx_pull_match(&b, ntohs(nfm->match_len),
-                                  &match, &fm->cookie, &fm->cookie_mask,
+                                  match, &fm->cookie, &fm->cookie_mask,
                                   false, tun_table, vl_mff_map);
             if (error) {
                 return error;
@@ -302,11 +303,11 @@ ofputil_decode_flow_mod(struct ofputil_flow_mod *fm,
 
     /* Check for mismatched conntrack original direction tuple address fields
      * w.r.t. the IP version of the match. */
-    if (((match.wc.masks.ct_nw_src || match.wc.masks.ct_nw_dst)
-         && match.flow.dl_type != htons(ETH_TYPE_IP))
-        || ((ipv6_addr_is_set(&match.wc.masks.ct_ipv6_src)
-             || ipv6_addr_is_set(&match.wc.masks.ct_ipv6_dst))
-            && match.flow.dl_type != htons(ETH_TYPE_IPV6))) {
+    if (((match->wc.masks.ct_nw_src || match->wc.masks.ct_nw_dst)
+         && match->flow.dl_type != htons(ETH_TYPE_IP))
+        || ((ipv6_addr_is_set(&match->wc.masks.ct_ipv6_src)
+             || ipv6_addr_is_set(&match->wc.masks.ct_ipv6_dst))
+            && match->flow.dl_type != htons(ETH_TYPE_IPV6))) {
         return OFPERR_OFPBAC_MATCH_INCONSISTENT;
     }
 
@@ -344,7 +345,7 @@ ofputil_decode_flow_mod(struct ofputil_flow_mod *fm,
     }
 
     struct ofpact_check_params cp = {
-        .match = &match,
+        .match = match,
         .max_ports = max_port,
         .table_id = fm->table_id,
         .n_tables = max_table
@@ -352,7 +353,7 @@ ofputil_decode_flow_mod(struct ofputil_flow_mod *fm,
     error = ofpacts_check_consistency(fm->ofpacts, fm->ofpacts_len,
                                       protocol, &cp);
     if (!error) {
-        minimatch_init(&fm->match, &match);
+        minimatch_init(&fm->match, match);
     }
     return error;
 }
@@ -493,13 +494,14 @@ ofputil_flow_mod_format(struct ds *s, const struct ofp_header *oh,
     enum ofperr error;
     enum ofpraw raw;
     enum ofputil_protocol protocol;
+    struct match match;
 
     protocol = ofputil_protocol_from_ofp_version(oh->version);
     protocol = ofputil_protocol_set_tid(protocol, true);
 
     ofpbuf_init(&ofpacts, 64);
     error = ofputil_decode_flow_mod(&fm, oh, protocol, NULL, NULL, &ofpacts,
-                                    OFPP_MAX, 255);
+                                    &match, OFPP_MAX, 255);
     if (error) {
         ofpbuf_uninit(&ofpacts);
         return error;

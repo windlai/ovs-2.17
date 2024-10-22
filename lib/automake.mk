@@ -130,6 +130,8 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/dpif-netdev-perf.c \
 	lib/dpif-netdev-perf.h \
 	lib/dpif-provider.h \
+	lib/dpif-sonic.c \
+	lib/dpif-sonic.h \
 	lib/dpif.c \
 	lib/dpif.h \
 	lib/heap.c \
@@ -456,6 +458,8 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/netdev-linux.h \
 	lib/netdev-linux-private.h \
 	lib/netdev-offload-tc.c \
+	lib/netdev-sonic.c \
+	lib/netdev-sonic.h \
 	lib/netlink-conntrack.c \
 	lib/netlink-conntrack.h \
 	lib/netlink-notifier.c \

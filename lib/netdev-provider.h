@@ -851,6 +851,7 @@ extern const struct netdev_class netdev_linux_class;
 #endif
 extern const struct netdev_class netdev_internal_class;
 extern const struct netdev_class netdev_tap_class;
+extern const struct netdev_class netdev_sonic_class;
 
 #ifdef HAVE_AF_XDP
 extern const struct netdev_class netdev_afxdp_class;

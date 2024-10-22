@@ -149,6 +149,7 @@ netdev_initialize(void)
         netdev_register_provider(&netdev_linux_class);
         netdev_register_provider(&netdev_internal_class);
         netdev_register_provider(&netdev_tap_class);
+        netdev_register_provider(&netdev_sonic_class);
         netdev_vport_tunnel_register();
 
         netdev_register_flow_api_provider(&netdev_offload_tc);

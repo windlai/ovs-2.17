@@ -69,6 +69,7 @@ COVERAGE_DEFINE(dpif_meter_get);
 COVERAGE_DEFINE(dpif_meter_del);
 
 static const struct dpif_class *base_dpif_classes[] = {
+    &dpif_sonic_class,
 #if defined(__linux__) || defined(_WIN32)
     &dpif_netlink_class,
 #endif

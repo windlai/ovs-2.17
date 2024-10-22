@@ -363,6 +363,12 @@ enum OVS_PACKED_ENUM rule_state {
                        * removed from the classifier as well. */
 };
 
+enum FLOW_IMPL_ENUM {
+    FLOW_IMPL_ADD,           /* OFPFC_ADD */
+    FLOW_IMPL_MODIFY,        /* OFPFC_MODIFY/OFPFC_MODIFY_STRICT */
+    FLOW_IMPL_DELETE,        /* OFPFC_DELETE/OFPFC_DELETE_STRICT */
+};
+
 struct rule {
     /* Where this rule resides in an OpenFlow switch.
      *
@@ -1369,6 +1375,13 @@ struct ofproto_class {
     void (*rule_get_stats)(struct rule *rule, struct pkt_stats *stats,
                            long long int *used)
         /* OVS_EXCLUDED(ofproto_mutex) */;
+
+    /* sonic needs to set flow to dpif when recevies OF flow_mod msg,
+     * rule_insert does not include ofproto, cannot direct to dpif,
+     * use the new function to do flow_mod of dpif
+     */
+    void (*flow_mod_impl)(const struct ofproto *ofproto, int type,
+            const struct ofputil_flow_mod *fm, struct match *match, struct ofpbuf *ofpacts);
 
     /* Translates actions in 'opo->ofpacts', for 'opo->packet' in flow tables
      * in version 'opo->version'.  This is useful for OpenFlow OFPT_PACKET_OUT.

@@ -6463,6 +6463,24 @@ odp_flow_key_from_mask(const struct odp_flow_key_parms *parms,
     odp_flow_key_from_flow__(parms, true, buf);
 }
 
+void
+odp_flow_action_from_action(const struct ofpbuf *in, struct ofpbuf *out)
+{
+    if (0 == in->size) {
+        nl_msg_put_u32(out, OVS_ACTION_ATTR_DROP, XLATE_OK);
+        return;
+    }
+
+    const struct ofpact *a;
+    OFPACT_FOR_EACH (a, in->data, in->size) {
+        if (a->type == OFPACT_OUTPUT) {
+            nl_msg_put_u32(out, OVS_ACTION_ATTR_OUTPUT, ofpact_get_OUTPUT(a)->port);
+        } else {
+            VLOG_INFO("%s %d. unhandled type:%d.", __FUNCTION__, __LINE__, a->type);
+        }
+    }
+}
+
 /* Generate ODP flow key from the given packet metadata */
 void
 odp_key_from_dp_packet(struct ofpbuf *buf, const struct dp_packet *packet)

@@ -242,6 +242,7 @@ struct odp_flow_key_parms {
 
 void odp_flow_key_from_flow(const struct odp_flow_key_parms *, struct ofpbuf *);
 void odp_flow_key_from_mask(const struct odp_flow_key_parms *, struct ofpbuf *);
+void odp_flow_action_from_action(const struct ofpbuf *, struct ofpbuf *);
 
 void odp_flow_key_hash(const void *key, size_t key_len, ovs_u128 *hash);
 
