@@ -264,12 +264,12 @@ const struct dpif_class dpif_sonic_class = {
 
 /* Generic Netlink family numbers for OVS.
  *
- * Initialized by dpif_sonic_init(). */
+ * Initialized by dpif_sonic_init().
 static int ovs_datapath_family;
 static int ovs_flow_family;
 static int ovs_packet_family;
 static int ovs_meter_family;
-
+ */
 
 
 /* Returns true if 'dpif' is a netdev or dummy dpif, false otherwise. */
@@ -1098,8 +1098,15 @@ odp_action_len(uint16_t type)
     return ATTR_LEN_INVALID;
 }
 
+/* sonic supports match
+ * in_port, ipv4, ethertype, L4 port, ip protocol, icmp type, vlan, tcp flag
+ * NOT support MAC
+ */
 static void dpif_sonic_print_flow(const struct nlattr *key, size_t key_len,
         const struct nlattr *mask, size_t mask_len, const struct nlattr *actions, size_t actions_len) {
+    if (0 == actions_len) {
+        return;
+    }
     if (0 != key_len) {
         const struct nlattr *a;
         unsigned int left;
@@ -1116,19 +1123,20 @@ static void dpif_sonic_print_flow(const struct nlattr *key, size_t key_len,
             switch (attr_type) {
                 case OVS_KEY_ATTR_IN_PORT: {
                     bool is_exact = ma ? odp_mask_attr_is_exact(ma) : true;
-                    int mask = 0;
+                    int attr_mask = 0;
 
                     if (!is_exact) {
-                        mask = nl_attr_get_be32(ma);
+                        attr_mask = nl_attr_get_be32(ma);
                     }
 
-                    if (0 != mask) {
+                    if (0 != attr_mask) {
                         VLOG_INFO("%s %d. inport:%u.", __FUNCTION__, __LINE__, nl_attr_get_be32(a));
                         VLOG_INFO("%s %d. mask:%x.", __FUNCTION__, __LINE__, nl_attr_get_be32(ma));
                     }
                     break;
                 }
 
+                /*
                 case OVS_KEY_ATTR_ETHERNET: {
                     const struct ovs_key_ethernet *attrmask = ma ? nl_attr_get(ma) : NULL;
                     const struct ovs_key_ethernet *attrkey = nl_attr_get(a);
@@ -1136,8 +1144,6 @@ static void dpif_sonic_print_flow(const struct nlattr *key, size_t key_len,
                     const struct eth_addr dst_key = attrkey->eth_dst;
                     const struct eth_addr *src_mask = MASK(attrmask, eth_src);
                     const struct eth_addr *dst_mask = MASK(attrmask, eth_dst);
-                    bool src_mask_full = !src_mask || eth_mask_is_exact(*src_mask);
-                    bool dst_mask_full = !dst_mask || eth_mask_is_exact(*dst_mask);
 
                     if (src_mask && !eth_addr_is_zero(*src_mask)) {
                         VLOG_INFO("%s %d. SA:"ETH_ADDR_FMT".", __FUNCTION__, __LINE__, ETH_ADDR_ARGS(src_key));
@@ -1150,16 +1156,46 @@ static void dpif_sonic_print_flow(const struct nlattr *key, size_t key_len,
                     }
                     break;
                 }
+                */
+
+                case OVS_KEY_ATTR_VLAN: {
+                    ovs_be16 tci = nl_attr_get_be16(a);
+                    ovs_be16 tci_mask = (ma ? nl_attr_get_be16(ma) : OVS_BE16_MAX);
+
+                    if (0 != vlan_tci_to_vid(tci_mask)) {
+                        VLOG_INFO("%s %d. vid:%u.", __FUNCTION__, __LINE__, vlan_tci_to_vid(tci));
+                        VLOG_INFO("%s %d. mask:%x.", __FUNCTION__, __LINE__, vlan_tci_to_vid(tci_mask));
+                    }
+                    if (0 != vlan_tci_to_pcp(tci_mask)) {
+                        VLOG_INFO("%s %d. vlan pcp:%u.", __FUNCTION__, __LINE__, vlan_tci_to_pcp(tci));
+                        VLOG_INFO("%s %d. mask:%x.", __FUNCTION__, __LINE__, vlan_tci_to_pcp(tci_mask));
+                    }
+                    break;
+                }
+
+                case OVS_KEY_ATTR_ETHERTYPE: {
+                    if (ma && (0 != nl_attr_get_be16(ma))) {
+                        VLOG_INFO("%s %d. etype:%u.", __FUNCTION__, __LINE__, ntohs(nl_attr_get_be16(a)));
+                        VLOG_INFO("%s %d. mask:%x.", __FUNCTION__, __LINE__, ntohs(nl_attr_get_be16(ma)));
+                    }
+                    break;
+                }
 
                 case OVS_KEY_ATTR_IPV4: {
                     const struct ovs_key_ipv4 *attrkey = nl_attr_get(a);
                     const struct ovs_key_ipv4 *attrmask = ma ? nl_attr_get(ma) : NULL;
                     ovs_be32 src_key = attrkey->ipv4_src;
                     ovs_be32 dst_key = attrkey->ipv4_dst;
+                    uint8_t proto = attrkey->ipv4_proto;
+                    uint8_t tos = attrkey->ipv4_tos;
+                    uint8_t ttl = attrkey->ipv4_ttl;
+                    uint8_t frag = attrkey->ipv4_frag;
                     const ovs_be32 *src_mask = MASK(attrmask, ipv4_src);
                     const ovs_be32 *dst_mask = MASK(attrmask, ipv4_dst);
-                    bool src_mask_full = !src_mask || *src_mask == OVS_BE32_MAX;
-                    bool dst_mask_full = !dst_mask || *dst_mask == OVS_BE32_MAX;
+                    const uint8_t *proto_mask = MASK(attrmask, ipv4_proto);
+                    const uint8_t *tos_mask = MASK(attrmask, ipv4_tos);
+                    const uint8_t *ttl_mask = MASK(attrmask, ipv4_ttl);
+                    const uint8_t *frag_mask = MASK(attrmask, ipv4_frag);
 
                     if (src_mask && (0 != *src_mask)) {
                         VLOG_INFO("%s %d. SIP:"IP_FMT".", __FUNCTION__, __LINE__, IP_ARGS(src_key));
@@ -1169,12 +1205,77 @@ static void dpif_sonic_print_flow(const struct nlattr *key, size_t key_len,
                         VLOG_INFO("%s %d. DIP:"IP_FMT".", __FUNCTION__, __LINE__, IP_ARGS(dst_key));
                         VLOG_INFO("%s %d. DIP mask:"IP_FMT".", __FUNCTION__, __LINE__, IP_ARGS(*dst_mask));
                     }
+                    if (proto_mask && (0 != *proto_mask)) {
+                        VLOG_INFO("%s %d. IP protocol:%d.", __FUNCTION__, __LINE__, proto);
+                        VLOG_INFO("%s %d. IP protocol mask:%X.", __FUNCTION__, __LINE__, *proto_mask);
+                    }
+                    if (tos_mask && (0 != *tos_mask)) {
+                        VLOG_INFO("%s %d. IP tos:%d.", __FUNCTION__, __LINE__, tos);
+                        VLOG_INFO("%s %d. IP tos mask:%X.", __FUNCTION__, __LINE__, *tos_mask);
+                    }
+                    if (ttl_mask && (0 != *ttl_mask)) {
+                        VLOG_INFO("%s %d. IP TTL:%d.", __FUNCTION__, __LINE__, ttl);
+                        VLOG_INFO("%s %d. IP TTL mask:%X.", __FUNCTION__, __LINE__, *ttl_mask);
+                    }
+                    if (frag_mask && (0 != *frag_mask)) {
+                        VLOG_INFO("%s %d. IP protocol:%d.", __FUNCTION__, __LINE__, frag);
+                        VLOG_INFO("%s %d. IP frag mask:%X.", __FUNCTION__, __LINE__, *frag_mask);
+                    }
                     break;
                 }
 
-                default:
+                case OVS_KEY_ATTR_TCP:
+                case OVS_KEY_ATTR_UDP:
+                case OVS_KEY_ATTR_SCTP: {
+                    const struct ovs_key_tcp *attrkey = nl_attr_get(a);
+                    const struct ovs_key_tcp *attrmask = ma ? nl_attr_get(ma) : NULL;
+                    ovs_be16 src_key = attrkey->tcp_src;
+                    ovs_be16 dst_key = attrkey->tcp_dst;
+                    const ovs_be16 *src_mask = MASK(attrmask, tcp_src);
+                    const ovs_be16 *dst_mask = MASK(attrmask, tcp_dst);
+
+                    if (src_mask && (0 != *src_mask)) {
+                        VLOG_INFO("%s %d. TCP src:%d.", __FUNCTION__, __LINE__, ntohs(src_key));
+                        VLOG_INFO("%s %d. TCP src mask:%X.", __FUNCTION__, __LINE__, ntohs(*src_mask));
+                    }
+                    if (dst_mask && (0 != *dst_mask)) {
+                        VLOG_INFO("%s %d. TCP dst:%d.", __FUNCTION__, __LINE__, ntohs(dst_key));
+                        VLOG_INFO("%s %d. TCP dst mask:%X.", __FUNCTION__, __LINE__, ntohs(*dst_mask));
+                    }
+                    break;
+                }
+
+                case OVS_KEY_ATTR_TCP_FLAGS: {
+                    if (ma && (0 != nl_attr_get_be16(ma))) {
+                        VLOG_INFO("%s %d. TCP flags:%u.", __FUNCTION__, __LINE__, ntohs(nl_attr_get_be16(a)));
+                        VLOG_INFO("%s %d. TCP flags mask:%x.", __FUNCTION__, __LINE__, ntohs(nl_attr_get_be16(ma)));
+                    }
+                    break;
+                }
+
+                case OVS_KEY_ATTR_ICMP: {
+                    const struct ovs_key_icmp *attrkey = nl_attr_get(a);
+                    const struct ovs_key_icmp *attrmask = ma ? nl_attr_get(ma) : NULL;
+                    uint8_t type_key = attrkey->icmp_type;
+                    uint8_t code_key = attrkey->icmp_code;
+                    const uint8_t *type_mask = MASK(attrmask, icmp_type);
+                    const uint8_t *code_mask = MASK(attrmask, icmp_code);
+
+                    if (type_mask && (0 != *type_mask)) {
+                        VLOG_INFO("%s %d. ICMP type:%d.", __FUNCTION__, __LINE__, ntohs(type_key));
+                        VLOG_INFO("%s %d. ICMP type mask:%X.", __FUNCTION__, __LINE__, ntohs(*type_mask));
+                    }
+                    if (code_mask && (0 != *code_mask)) {
+                        VLOG_INFO("%s %d. ICMP code:%d.", __FUNCTION__, __LINE__, ntohs(code_key));
+                        VLOG_INFO("%s %d. ICMP code mask:%X.", __FUNCTION__, __LINE__, ntohs(*code_mask));
+                    }
+                    break;
+                }
+
+                default: {
                     char namebuf[OVS_KEY_ATTR_STR_SIZE] = {0};
                     ovs_key_attr_to_string(attr_type, namebuf);
+                }
             }
         }
     }
@@ -1205,7 +1306,5 @@ static void dpif_sonic_print_flow(const struct nlattr *key, size_t key_len,
                     break;
             }
         }
-    } else {
-        VLOG_INFO("%s %d. actions_len = 0, drop ???", __FUNCTION__, __LINE__);
     }
 }

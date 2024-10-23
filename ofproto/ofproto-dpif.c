@@ -4863,6 +4863,7 @@ flow_mod_impl(const struct ofproto *ofproto_, int type,
     struct odp_flow_key_parms odp_parms = {
         .flow = &match->flow,
         .mask = &match->wc.masks,
+        .probe = true,
     };
 
     odp_flow_key_from_flow(&odp_parms, &key);
