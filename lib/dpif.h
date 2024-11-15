@@ -492,6 +492,9 @@ int dpif_port_dump_done(struct dpif_port_dump *);
 
 int dpif_port_poll(const struct dpif *, char **devnamep);
 void dpif_port_poll_wait(const struct dpif *);
+
+bool dpif_port_valid_flow_priority(struct dpif *, odp_port_t port_no, int priority);
+
 
 /* Flow table operations. */
 

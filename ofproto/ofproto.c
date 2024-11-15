@@ -2135,7 +2135,7 @@ ofproto_port_add(struct ofproto *ofproto, struct netdev *netdev,
     ofp_port_t ofp_port = ofp_portp ? *ofp_portp : OFPP_NONE;
     int error;
 
-    error = ofproto->ofproto_class->port_add(ofproto, netdev);
+    error = ofproto->ofproto_class->port_add(ofproto, netdev, ofp_port);
     if (!error) {
         const char *netdev_name = netdev_get_name(netdev);
 
@@ -6315,11 +6315,25 @@ handle_flow_mod(struct ofconn *ofconn, const struct ofp_header *oh)
                                     ofproto->n_tables);
     if (!error) {
         struct openflow_mod_requester req = { ofconn, oh };
+        const struct flow_wildcards wc = match.wc;
+        const struct flow flow = match.flow;
+        bool valid_sonic_flow = false;  /* must have inport */
+
+        if ((OFPFC_ADD == fm.command) && wc.masks.in_port.ofp_port) {
+            if (!ofproto->ofproto_class->port_valid_flow_priority(
+                    ofproto, flow.in_port.ofp_port, fm.priority)) {
+                VLOG_ERR("inport %u flow with invalid priority %d.", flow.in_port.ofp_port, fm.priority);
+                return OFPERR_OFPFMFC_BAD_PRIORITY;
+            }
+            valid_sonic_flow = true;
+        }
+
         error = handle_flow_mod__(ofproto, &fm, &req);
 
         if (!error) {
-            int type = ofproto_convert_flow_cmd_to_dpif_type(fm.command);
-            ofproto->ofproto_class->flow_mod_impl(ofproto, type, &fm, &match, &ofpacts);
+            if (valid_sonic_flow) {
+                ofproto->ofproto_class->flow_mod_impl_add(ofproto, fm.priority, &match, &ofpacts);
+            }
         }
         minimatch_destroy(&fm.match);
     }
@@ -9353,7 +9367,23 @@ static void
 ofproto_rule_remove__(struct ofproto *ofproto, struct rule *rule)
     OVS_REQUIRES(ofproto_mutex)
 {
+    int inport = 0;
+    struct match match;
+
     ovs_assert(rule->state == RULE_INSERTED);
+
+    minimatch_expand(&rule->cr.match, &match);
+
+    {
+        const struct flow_wildcards wc = match.wc;
+        const struct flow flow = match.flow;
+        ovs_be16 dl_type = flow.dl_type;
+
+        if (wc.masks.in_port.ofp_port) {
+            ofproto->ofproto_class->flow_mod_impl_del(
+                    ofproto, rule->cr.priority, flow.in_port.ofp_port, dl_type);
+        }
+    }
 
     cookies_remove(ofproto, rule);
 

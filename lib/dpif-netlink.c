@@ -4517,6 +4517,7 @@ const struct dpif_class dpif_netlink_class = {
     dpif_netlink_port_dump_done,
     dpif_netlink_port_poll,
     dpif_netlink_port_poll_wait,
+    NULL,                       /* port_valid_flow_priority */
     dpif_netlink_flow_flush,
     dpif_netlink_flow_dump_create,
     dpif_netlink_flow_dump_destroy,

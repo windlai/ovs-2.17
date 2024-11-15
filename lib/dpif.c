@@ -897,6 +897,14 @@ dpif_port_poll_wait(const struct dpif *dpif)
     dpif->dpif_class->port_poll_wait(dpif);
 }
 
+bool dpif_port_valid_flow_priority(struct dpif *dpif, odp_port_t port_no, int priority)
+{
+    if (dpif->dpif_class->port_valid_flow_priority) {
+        return dpif->dpif_class->port_valid_flow_priority(dpif, port_no, priority);
+    }
+    return true;
+}
+
 /* Extracts the flow stats for a packet.  The 'flow' and 'packet'
  * arguments must have been initialized through a call to flow_extract().
  * 'used' is stored into stats->used. */

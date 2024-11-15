@@ -6266,7 +6266,10 @@ odp_flow_key_from_flow__(const struct odp_flow_key_parms *parms,
     nl_msg_put_be32(buf, OVS_KEY_ATTR_PACKET_TYPE, data->packet_type);
 
     if (OVS_UNLIKELY(parms->probe)) {
-        max_vlans = FLOW_MAX_VLAN_HEADERS;
+        /* sonic only match outer vlan
+         * max_vlans = FLOW_MAX_VLAN_HEADERS;
+         */
+        max_vlans = 1;
     } else {
         max_vlans = MIN(parms->support.max_vlan_headers, flow_vlan_limit);
     }

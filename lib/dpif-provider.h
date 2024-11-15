@@ -295,6 +295,12 @@ struct dpif_class {
      * value other than EAGAIN. */
     void (*port_poll_wait)(const struct dpif *dpif);
 
+    /* valid port flow priority
+     * return true is the priority is valid
+     * NULL impl if not support this
+     */
+    bool (*port_valid_flow_priority)(struct dpif *dpif, odp_port_t port_no, int priority);
+
     /* Deletes all flows from 'dpif' and clears all of its queues of received
      * packets. */
     int (*flow_flush)(struct dpif *dpif);

@@ -85,8 +85,9 @@ static void rule_get_stats(struct rule *, struct pkt_stats *stats,
 static struct rule_dpif *rule_dpif_cast(const struct rule *);
 static void rule_expire(struct rule_dpif *, long long now);
 
-static void flow_mod_impl(const struct ofproto *ofproto_, int type,
-        const struct ofputil_flow_mod *fm, struct match *match, struct ofpbuf *ofpacts);
+static void flow_mod_impl_add(const struct ofproto *ofproto, int priority,
+            struct match *match, struct ofpbuf *ofpacts);
+static void flow_mod_impl_del(const struct ofproto *ofproto, int priority, int inport, ovs_be16 dl_type);
 
 
 struct ofbundle {
@@ -3950,8 +3951,10 @@ port_query_by_name(const struct ofproto *ofproto_, const char *devname,
     return error;
 }
 
+/* add argument ofp_port: to limit specified port number
+ */
 static int
-port_add(struct ofproto *ofproto_, struct netdev *netdev)
+port_add(struct ofproto *ofproto_, struct netdev *netdev, ofp_port_t ofp_port)
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
     const char *devname = netdev_get_name(netdev);
@@ -3965,7 +3968,7 @@ port_add(struct ofproto *ofproto_, struct netdev *netdev)
 
     dp_port_name = netdev_vport_get_dpif_port(netdev, namebuf, sizeof namebuf);
     if (!dpif_port_exists(ofproto->backer->dpif, dp_port_name)) {
-        odp_port_t port_no = ODPP_NONE;
+        odp_port_t port_no = ((0 != ofp_port) ? ofp_port : ODPP_NONE);
         int error;
 
         error = dpif_port_add(ofproto->backer->dpif, netdev, &port_no);
@@ -4104,6 +4107,12 @@ port_get_lacp_stats(const struct ofport *ofport_,
         }
     }
     return -1;
+}
+
+static bool port_valid_flow_priority(const struct ofproto *ofproto_, odp_port_t port_no, int priority)
+{
+    struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
+    return dpif_port_valid_flow_priority(ofproto->backer->dpif, port_no, priority);
 }
 
 struct port_dump_state {
@@ -4836,12 +4845,10 @@ rule_get_stats(struct rule *rule_, struct pkt_stats *stats,
 }
 
 /* direct set flow to dpif
- * type: enum FLOW_IMPL_ENUM flow_impl_type
  */
 static void
-flow_mod_impl(const struct ofproto *ofproto_, int type,
-        const struct ofputil_flow_mod *fm, struct match *match, struct ofpbuf *ofpacts)
-{
+flow_mod_impl_add(const struct ofproto *ofproto_, int priority,
+        struct match *match, struct ofpbuf *ofpacts) {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
     struct dpif_backer *backer = ofproto->backer;
     struct dpif *dpif = backer->dpif;
@@ -4870,32 +4877,22 @@ flow_mod_impl(const struct ofproto *ofproto_, int type,
     //odp_flow_key_hash(key.data, key.size, &ufid);
     odp_flow_key_from_mask(&odp_parms, &mask);
 
-    if (FLOW_IMPL_DELETE == type) {
-        op.type = DPIF_OP_FLOW_DEL;
-        op.flow_del.key = key.data;
-        op.flow_del.key_len = key.size;
-        op.flow_del.ufid = NULL;
-        op.flow_del.pmd_id = PMD_ID_NULL;
-        op.flow_del.stats = NULL;
-        op.flow_del.terse = false;
-    } else {
-        odp_flow_action_from_action(ofpacts, &action);
-        op.type = DPIF_OP_FLOW_PUT;
-
-        if (FLOW_IMPL_ADD == type) {
-            op.flow_put.flags = DPIF_FP_CREATE;
-        } else {
-            op.flow_put.flags = DPIF_FP_MODIFY;
-        }
-        op.flow_put.key = key.data;
-        op.flow_put.key_len = key.size;
-        op.flow_put.mask = (mask.size == 0 ? NULL : mask.data);
-        op.flow_put.mask_len = mask.size;
-        op.flow_put.actions = action.data;
-        op.flow_put.actions_len = action.size;
-        op.flow_put.ufid = NULL;
-        op.flow_put.pmd_id = PMD_ID_NULL;
-        op.flow_put.stats = NULL;
+    /* special handle for sonic:
+     * sonic use priority as key for flow
+     */
+    nl_msg_put_u32(&key, OVS_KEY_ATTR_PRIORITY, priority);
+    odp_flow_action_from_action(ofpacts, &action);
+    op.type = DPIF_OP_FLOW_PUT;
+    op.flow_put.flags = DPIF_FP_CREATE;
+    op.flow_put.key = key.data;
+    op.flow_put.key_len = key.size;
+    op.flow_put.mask = (mask.size == 0 ? NULL : mask.data);
+    op.flow_put.mask_len = mask.size;
+    op.flow_put.actions = action.data;
+    op.flow_put.actions_len = action.size;
+    op.flow_put.ufid = NULL;
+    op.flow_put.pmd_id = PMD_ID_NULL;
+    op.flow_put.stats = NULL;
     }
 
     opp = &op;
@@ -4903,6 +4900,47 @@ flow_mod_impl(const struct ofproto *ofproto_, int type,
     dpif_operate(dpif, &opp, n_ops, DPIF_OFFLOAD_AUTO);
     ofpbuf_uninit(&action);
     ofpbuf_uninit(&mask);
+    ofpbuf_uninit(&key);
+}
+
+/* direct set flow to dpif
+ * delete case, only needs priority and inport as key
+ * how to know is v6 ???
+ */
+static void
+flow_mod_impl_del(const struct ofproto *ofproto_, int priority, int inport, ovs_be16 dl_type)
+{
+    struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
+    struct dpif_backer *backer = ofproto->backer;
+    struct dpif *dpif = backer->dpif;
+    size_t n_ops = 1; //set one flow everytime
+    struct dpif_op *opp;
+    struct dpif_op op;
+    struct ofpbuf key;
+
+    if (0 != strcmp(ofproto_->type, "sonic")) {
+        return; //only set flow to dpif if type is sonic
+    }
+    ofpbuf_init(&key, 0);
+
+    /* special handle for sonic:
+     * sonic use priority as key for flow
+     */
+    nl_msg_put_u32(&key, OVS_KEY_ATTR_PRIORITY, priority);
+    nl_msg_put_odp_port(&key, OVS_KEY_ATTR_IN_PORT, inport);
+    nl_msg_put_be16(&key, OVS_KEY_ATTR_ETHERTYPE, dl_type);
+
+    op.type = DPIF_OP_FLOW_DEL;
+    op.flow_del.key = key.data;
+    op.flow_del.key_len = key.size;
+    op.flow_del.ufid = NULL;
+    op.flow_del.pmd_id = PMD_ID_NULL;
+    op.flow_del.stats = NULL;
+    op.flow_del.terse = false;
+
+    opp = &op;
+
+    dpif_operate(dpif, &opp, n_ops, DPIF_OFFLOAD_AUTO);
     ofpbuf_uninit(&key);
 }
 
@@ -6932,6 +6970,7 @@ const struct ofproto_class ofproto_dpif_class = {
     port_poll_wait,
     port_is_lacp_current,
     port_get_lacp_stats,
+    port_valid_flow_priority,
     NULL,                       /* rule_choose_table */
     rule_alloc,
     rule_construct,
@@ -6940,7 +6979,8 @@ const struct ofproto_class ofproto_dpif_class = {
     rule_destruct,
     rule_dealloc,
     rule_get_stats,
-    flow_mod_impl,
+    flow_mod_impl_add,
+    flow_mod_impl_del,
     packet_xlate,
     packet_xlate_revert,
     packet_execute_prepare,

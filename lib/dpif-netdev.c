@@ -9567,6 +9567,7 @@ const struct dpif_class dpif_netdev_class = {
     dpif_netdev_port_dump_done,
     dpif_netdev_port_poll,
     dpif_netdev_port_poll_wait,
+    NULL,                       /* port_valid_flow_priority */
     dpif_netdev_flow_flush,
     dpif_netdev_flow_dump_create,
     dpif_netdev_flow_dump_destroy,

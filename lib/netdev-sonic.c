@@ -29,6 +29,7 @@
 #include <net/if_arp.h>
 #include <net/route.h>
 #include <poll.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -184,9 +185,9 @@ static void read_features(struct netdev_sonic *netdev);
 static int do_ethtool(const char *name, struct ethtool_cmd *ecmd, int cmd, const char *cmd_name);
 
 
-/***** FAKE *****/
+#ifdef WIND_FAKE
 static int getFakePortIfindex(const char *netdev_name);
-/***** FAKE END *****/
+#endif
 
 
 
@@ -243,9 +244,19 @@ const struct netdev_class netdev_sonic_class = {
     .rxq_drain = netdev_sonic_rxq_drain
 };
 
+/* used to lock priority thread
+ */
+pthread_mutex_t lock_pri;
+
 /* fake port database; real port should from linux ethtool ???
  */
 static netdev_sonic_port_t port_ar[NETDEV_SONIC_PORT_MAX_COUNT]; //fake port size
+
+/* to record priority of port
+ * prevent priority duplicate (sonic is not allow priority duplicate at the same port)
+ */
+static netdev_sonic_port_pri_t priority_ar[NETDEV_SONIC_PORT_MAX_COUNT];
+
 
 
 void
@@ -264,6 +275,7 @@ netdev_sonic_get_dpif_port(const struct netdev *netdev,
 void netdev_sonic_port_init(void)
 {
     memset(port_ar, 0, sizeof(port_ar));
+    memset(priority_ar, 0, sizeof(priority_ar));
 }
 
 int netdev_sonic_port_add(const char *port_name_p, int *port_no)
@@ -275,14 +287,18 @@ int netdev_sonic_port_add(const char *port_name_p, int *port_no)
         return EOPNOTSUPP;
     }
 
-    if (strstr(port_name_p, "Ethernet") != NULL) {
+    if ((0xffff != *port_no) && (UINT32_MAX /*ODPP_NONE*/ != *port_no)) {
+        ifindex = *port_no;
+    } else if (strstr(port_name_p, "Ethernet") != NULL) {
         char port_no_ar[4] = {0};
         sscanf(port_name_p, "Ethernet%[0-9]", port_no_ar);
         ifindex = atoi(port_no_ar);
     } else {
         ifindex = (NETDEV_SONIC_PORT_MAX_COUNT - 1);
     }
-
+VLOG_INFO("%s %d. ifindex:%d.", __FUNCTION__, __LINE__, ifindex);
+    /* OFPP_NONE(0xffff) is bridge ifindex, ignore it
+     */
     if (NETDEV_SONIC_PORT_MAX_COUNT <= ifindex) {
         VLOG_ERR("%s %d. ifindex:%d exceed max ifindex", __FUNCTION__, __LINE__, ifindex);
         return EOPNOTSUPP;
@@ -353,6 +369,137 @@ int netdev_sonic_port_next(netdev_sonic_port_t *data_p)
     return EOF;
 }
 
+bool netdev_sonic_port_name_by_number(int port_no, char *name_p)
+{
+    VLOG_INFO("%s %d. port_no:%d.", __FUNCTION__, __LINE__, port_no);
+    if (NETDEV_SONIC_PORT_MAX_COUNT > port_no) {
+        if (0 != port_ar[port_no].active) {
+            strcpy(name_p, port_ar[port_no].name_ar);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool netdev_sonic_port_acl_set(int port_no, int priority, int table_type, bool add)
+{
+    int idx = 0;
+    VLOG_INFO("%s %d. port_no:%d. priority:%d. table_type:%d.", __FUNCTION__, __LINE__, port_no, priority, table_type);
+    if (NETDEV_SONIC_PORT_MAX_COUNT > port_no) {
+        if (NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3 == table_type) {
+            for (idx = 0; idx < NETDEV_SONIC_PORT_MAX_ACE_CNT; idx++) {
+                if (add) {
+                    if (0 != priority_ar[port_no].l3_pri_ar[idx]) {
+                        return false;
+                    }
+                } else { /* when removing, ignore itself */
+                    if ((0 != priority_ar[port_no].l3_pri_ar[idx])
+                            && (priority != priority_ar[port_no].l3_pri_ar[idx])) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        } else {
+            for (idx = 0; idx < NETDEV_SONIC_PORT_MAX_ACE_CNT; idx++) {
+                if (add) {
+                    if (0 != priority_ar[port_no].l3v6_pri_ar[idx]) {
+                        return false;
+                    }
+                } else { /* when removing, ignore itself */
+                    if ((0 != priority_ar[port_no].l3v6_pri_ar[idx])
+                            && (priority != priority_ar[port_no].l3v6_pri_ar[idx])) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+bool netdev_sonic_port_priority_set(int port_no, int priority, int table_type, bool add)
+{
+    int idx = 0;
+    VLOG_INFO("%s %d. port_no:%d. priority:%d. table_type:%d.", __FUNCTION__, __LINE__, port_no, priority, table_type);
+    if (NETDEV_SONIC_PORT_MAX_COUNT > port_no) {
+        if (NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3 == table_type) {
+            if (add) {
+                for (idx = 0; idx < NETDEV_SONIC_PORT_MAX_ACE_CNT; idx++) {
+                    if (0 == priority_ar[port_no].l3_pri_ar[idx]) {
+                        pthread_mutex_lock(&lock_pri);
+                        priority_ar[port_no].l3_pri_ar[idx] = priority;
+                        pthread_mutex_unlock(&lock_pri);
+                        return true;
+                    }
+                }
+            } else {
+                for (idx = 0; idx < NETDEV_SONIC_PORT_MAX_ACE_CNT; idx++) {
+                    if (priority == priority_ar[port_no].l3_pri_ar[idx]) {
+                        pthread_mutex_lock(&lock_pri);
+                        priority_ar[port_no].l3_pri_ar[idx] = 0;
+                        pthread_mutex_unlock(&lock_pri);
+                        return true;
+                    }
+                }
+            }
+        } else {
+            if (add) {
+                for (idx = 0; idx < NETDEV_SONIC_PORT_MAX_ACE_CNT; idx++) {
+                    if (0 == priority_ar[port_no].l3v6_pri_ar[idx]) {
+                        pthread_mutex_lock(&lock_pri);
+                        priority_ar[port_no].l3v6_pri_ar[idx] = priority;
+                        pthread_mutex_unlock(&lock_pri);
+                        return true;
+                    }
+                }
+            } else {
+                for (idx = 0; idx < NETDEV_SONIC_PORT_MAX_ACE_CNT; idx++) {
+                    if (priority == priority_ar[port_no].l3v6_pri_ar[idx]) {
+                        pthread_mutex_lock(&lock_pri);
+                        priority_ar[port_no].l3v6_pri_ar[idx] = 0;
+                        pthread_mutex_unlock(&lock_pri);
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+bool netdev_sonic_port_priority_valid(int port_no, int priority)
+{
+    int idx = 0;
+    VLOG_INFO("%s %d. port_no:%d. priority:%d.", __FUNCTION__, __LINE__, port_no, priority);
+    if ((NETDEV_SONIC_REDIS_ACL_RULE_PRIORITY_MIN > priority)
+            || (NETDEV_SONIC_REDIS_ACL_RULE_PRIORITY_MAX < priority)) {
+        VLOG_INFO("%s %d. port_no:%d. priority %d is out of range.", __FUNCTION__, __LINE__, port_no, priority);
+        return false;
+    }
+
+    if (NETDEV_SONIC_PORT_MAX_COUNT > port_no) {
+        /* SONiC limit: L3 ACE priority and L3v6 ACE priority should be different
+         * so don't care table type, check priority
+         */
+        for (idx = 0; idx < NETDEV_SONIC_PORT_MAX_ACE_CNT; idx++) {
+            if (priority == priority_ar[port_no].l3_pri_ar[idx]) {
+                return false;
+            }
+        }
+
+        for (idx = 0; idx < NETDEV_SONIC_PORT_MAX_ACE_CNT; idx++) {
+            if (priority == priority_ar[port_no].l3v6_pri_ar[idx]) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
 
 static void
 netdev_sonic_wait(const struct netdev_class *netdev_class OVS_UNUSED)
@@ -768,8 +915,8 @@ netdev_sonic_get_status(const struct netdev *netdev_, struct smap *smap)
     int error = 0;
     VLOG_INFO("%s %d.", __FUNCTION__, __LINE__);
 
-/***** FAKE *****/
-    char *netdev_name = netdev_get_name(netdev);
+#ifdef WIND_FAKE
+    char *netdev_name = netdev_get_name(netdev_);
     int ifindex = getFakePortIfindex(netdev_name);
     VLOG_INFO("%s %d. netdev_name:%s.", __FUNCTION__, __LINE__, netdev_name);
     if (0 >= ifindex) {
@@ -778,7 +925,7 @@ netdev_sonic_get_status(const struct netdev *netdev_, struct smap *smap)
         smap_add(smap, "firmware_version", "unknown");
         return 0;
     }
-/***** FAKE END *****/
+#endif
 
     ovs_mutex_lock(&netdev->mutex);
 
@@ -894,7 +1041,7 @@ static int get_etheraddr(const char *netdev_name, struct eth_addr *ea)
     int hwaddr_family;
     int error;
 
-/***** FAKE *****/
+#ifdef WIND_FAKE
     int ifindex = getFakePortIfindex(netdev_name);
     VLOG_INFO("%s %d. netdev_name:%s.", __FUNCTION__, __LINE__, netdev_name);
     if (0 >= ifindex) {
@@ -903,7 +1050,7 @@ static int get_etheraddr(const char *netdev_name, struct eth_addr *ea)
         memcpy(ea, mac_ar, ETH_ADDR_LEN);
         return 0;
     }
-/***** FAKE END *****/
+#endif
 
     memset(&ifr, 0, sizeof ifr);
     ovs_strzcpy(ifr.ifr_name, netdev_name, sizeof ifr.ifr_name);
@@ -931,18 +1078,18 @@ static int get_etheraddr(const char *netdev_name, struct eth_addr *ea)
 
 static int get_ethmtu(struct netdev_sonic *netdev, int *mtup)
 {
-    char *netdev_name = netdev_get_name(netdev);
+    char *netdev_name = netdev_get_name(&netdev->up);
     int error;
     struct ifreq ifr;
 
-/***** FAKE *****/
+#ifdef WIND_FAKE
     int ifindex = getFakePortIfindex(netdev_name);
     VLOG_INFO("%s %d. netdev_name:%s.", __FUNCTION__, __LINE__, netdev_name);
     if (0 >= ifindex) {
         *mtup = 1500;
         return 0;
     }
-/***** FAKE END *****/
+#endif
 
     netdev->netdev_mtu_error = af_inet_ifreq_ioctl(
             netdev_get_name(&netdev->up), &ifr, SIOCGIFMTU, "SIOCGIFMTU");
@@ -963,14 +1110,14 @@ static int get_ifindex(const struct netdev *netdev_, int *ifindexp)
     struct ifreq ifr;
     int error;
 
-/***** FAKE *****/
+#ifdef WIND_FAKE
     int ifindex = getFakePortIfindex(netdev_name);
     VLOG_INFO("%s %d. netdev_name:%s.", __FUNCTION__, __LINE__, netdev_name);
     if (0 >= ifindex) {
         *ifindexp = ifindex;
         return ifindex;
     }
-/***** FAKE END *****/
+#endif
 
     //fake test database ???
     int idx = 0;
@@ -1002,12 +1149,12 @@ static int get_ifindex(const struct netdev *netdev_, int *ifindexp)
 
 static void read_features(struct netdev_sonic *netdev)
 {
-    char *netdev_name = netdev_get_name(netdev);
+    char *netdev_name = netdev_get_name(&netdev->up);
     struct ethtool_cmd ecmd;
     uint32_t speed;
     int error;
 
-/***** FAKE *****/
+#ifdef WIND_FAKE
     int ifindex = getFakePortIfindex(netdev_name);
     VLOG_INFO("%s %d. netdev_name:%s.", __FUNCTION__, __LINE__, netdev_name);
     if (0 >= ifindex) {
@@ -1025,7 +1172,7 @@ static void read_features(struct netdev_sonic *netdev)
         netdev->get_features_error = 0;
         return;
     }
-/***** FAKE END *****/
+#endif
 
     //COVERAGE_INC(netdev_get_ethtool);
     memset(&ecmd, 0, sizeof ecmd);
@@ -1191,7 +1338,7 @@ static int do_ethtool(const char *name, struct ethtool_cmd *ecmd,
 }
 
 
-/***** FAKE *****/
+#ifdef WIND_FAKE
 static int getFakePortIfindex(const char *netdev_name) {
     int idx = 0;
     VLOG_INFO("%s %d. netdev_name:%s.", __FUNCTION__, __LINE__, netdev_name);
@@ -1204,4 +1351,4 @@ static int getFakePortIfindex(const char *netdev_name) {
     }
     return -1;
 }
-/***** FAKE END *****/
+#endif

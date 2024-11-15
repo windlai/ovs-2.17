@@ -1090,7 +1090,7 @@ struct ofproto_class {
      * It doesn't matter whether the new port will be returned by a later call
      * to ->port_poll(); the implementation may do whatever is more
      * convenient. */
-    int (*port_add)(struct ofproto *ofproto, struct netdev *netdev);
+    int (*port_add)(struct ofproto *ofproto, struct netdev *netdev, ofp_port_t ofp_port);
 
     /* Deletes port number 'ofp_port' from the datapath for 'ofproto'.  Returns
      * 0 if successful, otherwise a positive errno value.
@@ -1244,6 +1244,12 @@ struct ofproto_class {
     int (*port_get_lacp_stats)(const struct ofport *port,
                                struct lacp_member_stats *stats);
 
+    /* valid port flow priority
+     * return true is the priority is valid
+     * NULL impl if not support this
+     */
+    bool (*port_valid_flow_priority)(const struct ofport *ofproto, odp_port_t port_no, int priority);
+
 /* ## ----------------------- ## */
 /* ## OpenFlow Rule Functions ## */
 /* ## ----------------------- ## */
@@ -1380,8 +1386,14 @@ struct ofproto_class {
      * rule_insert does not include ofproto, cannot direct to dpif,
      * use the new function to do flow_mod of dpif
      */
-    void (*flow_mod_impl)(const struct ofproto *ofproto, int type,
-            const struct ofputil_flow_mod *fm, struct match *match, struct ofpbuf *ofpacts);
+    void (*flow_mod_impl_add)(const struct ofproto *ofproto, int priority,
+            struct match *match, struct ofpbuf *ofpacts);
+
+    /* sonic needs to set flow to dpif when recevies OF flow_mod msg,
+     * use the new function to do flow_mod of dpif
+     * delete case, only needs priority and inport as key
+     */
+    void (*flow_mod_impl_del)(const struct ofproto *ofproto, int priority, int inport, ovs_be16 dl_type);
 
     /* Translates actions in 'opo->ofpacts', for 'opo->packet' in flow tables
      * in version 'opo->version'.  This is useful for OpenFlow OFPT_PACKET_OUT.

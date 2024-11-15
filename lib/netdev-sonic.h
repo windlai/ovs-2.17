@@ -22,8 +22,18 @@
 #include "timer.h"
 
 
-#define NETDEV_SONIC_PORT_MAX_COUNT 100
+#define NETDEV_SONIC_PORT_MAX_COUNT 768
 #define NETDEV_SONIC_PORT_MAX_NAME_LEN 12
+
+#define NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3 0
+#define NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3V6 1
+#define NETDEV_SONIC_REDIS_ACL_RULE_PRIORITY_MIN 1
+#define NETDEV_SONIC_REDIS_ACL_RULE_PRIORITY_MAX 10000
+
+/* defines a port could binding max count ACE ???
+ */
+#define NETDEV_SONIC_PORT_MAX_ACE_CNT 30
+
 
 struct netdev;
 
@@ -65,6 +75,16 @@ typedef struct netdev_sonic_port {
     int active; //used when 1; default 0
 } netdev_sonic_port_t;
 
+/* record ACE priority of per port
+ * SONiC limit: L3 ACE priority and L3v6 ACE priority should be different
+ */
+typedef struct netdev_sonic_port_pri {
+    int ifindex;
+    int l3_pri_ar[NETDEV_SONIC_PORT_MAX_ACE_CNT];
+    int l3v6_pri_ar[NETDEV_SONIC_PORT_MAX_ACE_CNT];
+    //int active; //used when 1; default 0
+} netdev_sonic_port_pri_t;
+
 void netdev_sonic_run(const struct netdev_class *);
 
 static bool
@@ -91,5 +111,33 @@ int netdev_sonic_port_del(int port_no);
 int netdev_sonic_port_query_by_number(int port_no, netdev_sonic_port_t *data_p);
 int netdev_sonic_port_query_by_name(const char *port_name_p, netdev_sonic_port_t *data_p);
 int netdev_sonic_port_next(netdev_sonic_port_t *data_p);
+
+bool netdev_sonic_port_name_by_number(int port_no, char *name_p);
+
+
+/* true if need to create/remove ACL table
+ * port_no (input): port ifindex
+ * prority (input): ACE prority
+ * table_type (input): ACL table type
+ *  [NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3/NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3V6]
+ * add (input): true to add
+ */
+bool netdev_sonic_port_acl_set(int port_no, int priority, int table_type, bool add);
+
+/* record port ACE priority
+ * port_no (input): port ifindex
+ * prority (input): ACE prority
+ * table_type (input): ACL table type
+ *  [NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3/NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3V6]
+ * add (input): true to add
+ */
+bool netdev_sonic_port_priority_set(int port_no, int priority, int table_type, bool add);
+
+/* true if port ACE priority is valid
+ * port_no (input): port ifindex
+ * prority (input): ACE prority
+ */
+bool netdev_sonic_port_priority_valid(int port_no, int priority);
+
 
 #endif /* NETDEV_SONIC_H */

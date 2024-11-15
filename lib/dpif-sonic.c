@@ -19,6 +19,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <hiredis/hiredis.h>
 
 #include "bitmap.h"
 #include "dpif.h"
@@ -66,6 +67,35 @@ VLOG_DEFINE_THIS_MODULE(dpif_sonic);
 
 #define PORT_LOOP_GET_FIRST_IFINDEX_POSITION -1
 
+#define INVALID_IFINDEX -1
+#define REDIS_CMD_TYPE_REMOVE 0
+#define REDIS_CMD_TYPE_ADD 1
+
+#define REDIS_CMD_ACL_TABLE_NAME_LEN 32
+
+/* define the max length of redis command
+ * L3 add command, ex,
+ * hset ACL_RULE|ACL_ETH999|65535 PRIORITY 65535 VLAN_ID 4094
+ *      SRC_IP 192.168.111.100/32 DST_IP 192.168.111.101/32
+ *      IP_PROTOCOL 255 L4_SRC_PORT 65535 L4_DST_PORT 65533 ETHER_TYPE 0x8892
+ *      IP_TYPE IPV4ANY ICMP_CODE 255 ICMP_TYPE 233 REDIRECT_ACTION Ethernet999
+ * L3v6 add command, ex,
+ * hset ACL_RULE|ACL_ETH9996v6|65535 PRIORITY 65535 VLAN_ID 4094
+ *      DST_IPV6 2001:0000:130F:0000:0000:09C0:876A:130B/128
+ *      SRC_IPV6 2001:0000:130F:0000:0000:09C0:876A:130B/126
+ *      ICMPV6_CODE 254 ICMPV6_TYPE 255 IP_TYPE IPV6ANY REDIRECT_ACTION Ethernet999
+ */
+#define REDIS_CMD_MAX_LENGTH 256
+/* define the max lenght of match ethertype
+ * max example: "ETHER_TYPE 65535"
+ */
+#define REDIS_CMD_ETYPE_MAX_LENGTH 20
+/* define the max length of redis field/value command, ex,
+ * DST_IPV6 2001:0000:130F:0000:0000:09C0:876A:130B/128
+ */
+#define REDIS_CMD_FIELD_VALUE_MAX_LENGTH 60
+
+
 /* Configuration parameters. */
 enum { MAX_METERS = 1 << 18 };  /* Maximum number of meters. */
 enum { MAX_BANDS = 8 };         /* Maximum number of bands / meter. */
@@ -112,7 +142,6 @@ struct dpif_sonic_port_state {
     int ifindex_position;
 };
 
-
 /* open_dpif@netlink, create_dpif_netdev@netdev */
 static int open_dpif(const char *name, struct dpif **dpifp);
 static struct dpif_sonic *dpif_sonic_cast(const struct dpif *dpif);
@@ -141,6 +170,7 @@ static int dpif_sonic_port_dump_next(const struct dpif *dpif_, void *state_, str
 static int dpif_sonic_port_dump_done(const struct dpif *dpif_ OVS_UNUSED, void *state_);
 static int dpif_sonic_port_poll(const struct dpif *dpif_, char **devnamep);
 static void dpif_sonic_port_poll_wait(const struct dpif *dpif_);
+static bool dpif_sonic_port_valid_flow_priority(struct dpif *dpif, odp_port_t port_no, int priority);
 static int dpif_sonic_flow_flush(struct dpif *dpif);
 
 static struct dpif_sonic_flow_dump *dpif_sonic_flow_dump_cast(struct dpif_flow_dump *dump);
@@ -172,8 +202,12 @@ static int dpif_sonic_meter_del(struct dpif *dpif, ofproto_meter_id meter_id_,
 
 static bool odp_mask_attr_is_exact(const struct nlattr *ma);
 static void ovs_key_attr_to_string(int attr, char *namebuf);
+static void dpif_sonic_construct_ace_set(const struct nlattr *key, size_t key_len,
+        const struct nlattr *mask, size_t mask_len, const struct nlattr *actions, size_t actions_len);
+static void dpif_sonic_construct_ace_unset(const struct nlattr *key, size_t key_len);
 static void dpif_sonic_print_flow(const struct nlattr *key, size_t key_len,
         const struct nlattr *mask, size_t mask_len, const struct nlattr *actions, size_t actions_len);
+static void connectRedis(char *table_cmd_p, char *cmd_p, int type);
 
 
 const struct dpif_class dpif_sonic_class = {
@@ -201,6 +235,7 @@ const struct dpif_class dpif_sonic_class = {
     dpif_sonic_port_dump_done,
     dpif_sonic_port_poll,
     dpif_sonic_port_poll_wait,
+    dpif_sonic_port_valid_flow_priority,
     dpif_sonic_flow_flush,
     dpif_sonic_flow_dump_create,
     dpif_sonic_flow_dump_destroy,
@@ -270,6 +305,7 @@ static int ovs_flow_family;
 static int ovs_packet_family;
 static int ovs_meter_family;
  */
+
 
 
 /* Returns true if 'dpif' is a netdev or dummy dpif, false otherwise. */
@@ -624,6 +660,11 @@ static void
 dpif_sonic_port_poll_wait(const struct dpif *dpif_)
 {
 
+static bool dpif_sonic_port_valid_flow_priority(struct dpif *dpif,
+                    odp_port_t port_no, int priority)
+{
+    VLOG_INFO("%s %d.", __FUNCTION__, __LINE__);
+    return netdev_sonic_port_priority_valid((int) port_no, priority);
 }
 
 /* Deletes all flows from 'dpif' and clears all of its queues of received
@@ -749,25 +790,30 @@ dpif_sonic_operate(struct dpif *dpif, struct dpif_op **ops, size_t n_ops,
         struct dpif_op *op = ops[i];
         struct dpif_flow_put *put;
         struct dpif_flow_del *del;
-        struct dpif_flow_get *get;
+        //struct dpif_flow_get *get;
 
         switch (op->type) {
             case DPIF_OP_FLOW_PUT: {
+                VLOG_INFO("%s %d. DPIF_OP_FLOW_PUT", __FUNCTION__, __LINE__);
                 put = &op->flow_put;
-                dpif_sonic_print_flow(put->key, put->key_len,
+                dpif_sonic_construct_ace_set(put->key, put->key_len,
                         put->mask, put->mask_len, put->actions, put->actions_len);
                 break;
             }
 
             case DPIF_OP_FLOW_DEL: {
+                VLOG_INFO("%s %d. DPIF_OP_FLOW_DEL", __FUNCTION__, __LINE__);
                 del = &op->flow_del;
+                dpif_sonic_construct_ace_unset(del->key, del->key_len);
                 break;
             }
 
             case DPIF_OP_FLOW_GET: {
-                get = &op->flow_get;
+                VLOG_INFO("%s %d. DPIF_OP_FLOW_GET", __FUNCTION__, __LINE__);
+                //get = &op->flow_get;
                 break;
             }
+            case DPIF_OP_EXECUTE:
             default:
                 VLOG_INFO("%s %d. not handle op->type:%d", __FUNCTION__, __LINE__, op->type);
         } /* switch (op->type) */
@@ -1098,15 +1144,638 @@ odp_action_len(uint16_t type)
     return ATTR_LEN_INVALID;
 }
 
+/* get prefix of ip address
+ * ipaddr_p (input)
+ * prefix_p (output)
+ * return true if success
+ */
+static bool dpif_sonic_get_v4prefix(char *ipaddr_p, int *prefix_p)
+{
+    int n = 0;
+    int i = 0;
+
+    /* inet_pton() returns 1 on success (network address was successfully converted).
+     */
+    if (!inet_pton(AF_INET, ipaddr_p, &n)) {
+        return false;
+    }
+
+    while (n > 0) {
+        n = n >> 1;
+        i++;
+    }
+    return true;
+}
+
+static void dpif_sonic_get_v6prefix(const struct in6_addr *ipaddr_p, int *prefix_p)
+{
+    int i = 0;
+    int bits = 0;
+
+    for (i = 0; i < 16; i++) {
+        switch (ipaddr_p->s6_addr[i]) {
+            case 0xFF:
+                bits += 8;
+                break;
+            case 0xFE:
+                bits += 7;
+                break;
+            case 0xFC:
+                bits += 6;
+                break;
+            case 0xF8:
+                bits += 5;
+                break;
+            case 0xF0:
+                bits += 4;
+                break;
+            case 0xE0:
+                bits += 3;
+                break;
+            case 0xC0:
+                bits += 2;
+                break;
+            case 0x80:
+                bits += 1;
+                break;
+            default:
+                break;
+        }
+    }
+    *prefix_p = bits;
+}
+
+/* construct ACL table name
+ * name_p (output): ACL table name ["ACL_TABLE|ACL_ETH0", "ACL_TABLE|ACL_ETH0v6"]
+ * port_p (input): port name
+ * table_type (input): ACL table type [NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3/NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3V6]
+ */
+static void dpif_sonic_construct_acl_table_name(char *name_p, char * port_p, int table_type)
+{
+    if (NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3 == table_type) {
+        sprintf(name_p, "ACL_TABLE|%s", port_p);
+    } else {
+        sprintf(name_p, "ACL_TABLE|%sv6", port_p);
+    }
+}
+
+/* construct ACE name
+ * name_p (output): ACL table name
+ *     ["ACL_RULE|ACL_ETH<port>|<priority>", "ACL_RULE|ACL_ETH<port>v6|<priority>"]
+ * port_p (input): port name
+ * prority (input): ACE prority
+ * table_type (input): ACL table type [NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3/NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3V6]
+ */
+static void dpif_sonic_construct_ace_name(char *name_p, char * port_p, int prority, int table_type)
+{
+    if (NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3 == table_type) {
+        sprintf(name_p, "ACL_RULE|%s|%d", port_p, prority);
+    } else {
+        sprintf(name_p, "ACL_RULE|%sv6|%d", port_p, prority);
+    }
+}
+
+static void dpif_sonic_construct_ace_set(const struct nlattr *key, size_t key_len,
+        const struct nlattr *mask, size_t mask_len, const struct nlattr *actions, size_t actions_len)
+{
+    /* initial ifindex to -1 (because real sonic port start from 0)
+     */
+    char cmd_ar[REDIS_CMD_MAX_LENGTH] = {0};
+    char etype_cmd_ar[REDIS_CMD_ETYPE_MAX_LENGTH] = {0};
+    int ifindex = INVALID_IFINDEX;
+    int priority = 0;
+    int table_type = NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3;
+
+    if (0 == actions_len) {
+        return;
+    }
+
+    if (0 != key_len) {
+        const struct nlattr *a;
+        unsigned int left;
+        NL_ATTR_FOR_EACH (a, left, key, key_len) {
+            int /*enum ovs_key_attr*/ attr_type = nl_attr_type(a);
+            //ma is used to get mask value
+            const struct nlattr *ma = (mask && mask_len
+                           ? nl_attr_find__(mask, mask_len, attr_type) : NULL);
+
+            if (mask && mask_len) {
+                ma = nl_attr_find__(mask, mask_len, nl_attr_type(a));
+            }
+
+            switch (attr_type) {
+                case OVS_KEY_ATTR_PRIORITY: {
+                    priority = nl_attr_get_be32(a);
+                    VLOG_INFO("%s %d. priority:%u.", __FUNCTION__, __LINE__, priority);
+                    break;
+                }
+
+                case OVS_KEY_ATTR_IN_PORT: {
+                    bool is_exact = ma ? odp_mask_attr_is_exact(ma) : true;
+                    int attr_mask = 0;
+
+                    if (!is_exact) {
+                        attr_mask = nl_attr_get_be32(ma);
+                    }
+
+                    if (0 != attr_mask) {
+                        ifindex = nl_attr_get_be32(a); //if mask ???
+                        VLOG_INFO("%s %d. inport:%u.", __FUNCTION__, __LINE__, nl_attr_get_be32(a));
+                        VLOG_INFO("%s %d. mask:%x.", __FUNCTION__, __LINE__, nl_attr_get_be32(ma));
+                    }
+                    break;
+                }
+
+                case OVS_KEY_ATTR_ETHERNET: {
+                    const struct ovs_key_ethernet *attrmask = ma ? nl_attr_get(ma) : NULL;
+                    const struct ovs_key_ethernet *attrkey = nl_attr_get(a);
+                    const struct eth_addr src_key = attrkey->eth_src;
+                    const struct eth_addr dst_key = attrkey->eth_dst;
+                    const struct eth_addr *src_mask = MASK(attrmask, eth_src);
+                    const struct eth_addr *dst_mask = MASK(attrmask, eth_dst);
+
+                    if (src_mask && !eth_addr_is_zero(*src_mask)) {
+                        VLOG_WARN("NOT handle SA:"ETH_ADDR_FMT".", ETH_ADDR_ARGS(src_key));
+                        VLOG_INFO("%s %d. SA:"ETH_ADDR_FMT".", __FUNCTION__, __LINE__, ETH_ADDR_ARGS(src_key));
+                        VLOG_INFO("%s %d. SA mask:"ETH_ADDR_FMT".", __FUNCTION__, __LINE__, ETH_ADDR_ARGS(*src_mask));
+                    }
+
+                    if (dst_mask && !eth_addr_is_zero(*dst_mask)) {
+                        VLOG_WARN("NOT handle DA:"ETH_ADDR_FMT".", ETH_ADDR_ARGS(dst_key));
+                        VLOG_INFO("%s %d. DA:"ETH_ADDR_FMT".", __FUNCTION__, __LINE__, ETH_ADDR_ARGS(dst_key));
+                        VLOG_INFO("%s %d. DA mask:"ETH_ADDR_FMT".", __FUNCTION__, __LINE__, ETH_ADDR_ARGS(*dst_mask));
+                    }
+                    break;
+                }
+
+                case OVS_KEY_ATTR_VLAN: {
+                    ovs_be16 tci = nl_attr_get_be16(a);
+                    ovs_be16 tci_mask = (ma ? nl_attr_get_be16(ma) : OVS_BE16_MAX);
+
+                    if (0 != vlan_tci_to_vid(tci_mask)) {
+                        char filed_value_ar[REDIS_CMD_FIELD_VALUE_MAX_LENGTH] = {0};
+                        ovs_be16 field_mask = vlan_tci_to_vid(tci_mask);
+
+                        /* not allow mask by SONiC => set asci failed */
+                        sprintf(filed_value_ar, " VLAN_ID %u", vlan_tci_to_vid(tci));
+                        strcat(cmd_ar, filed_value_ar);
+                        VLOG_INFO("%s %d. vid:%u.", __FUNCTION__, __LINE__, vlan_tci_to_vid(tci));
+                        VLOG_INFO("%s %d. mask:%x.", __FUNCTION__, __LINE__, field_mask);
+                    }
+                    if (0 != vlan_tci_to_pcp(tci_mask)) {
+                        /* SONiC: vlan pri is not supported on this ACL table*/
+                        VLOG_WARN("NOT handle vlan pcp:%u.", vlan_tci_to_pcp(tci));
+                        VLOG_INFO("%s %d. vlan pcp:%u.", __FUNCTION__, __LINE__, vlan_tci_to_pcp(tci));
+                    }
+                    break;
+                }
+
+                case OVS_KEY_ATTR_ETHERTYPE: {
+                    ovs_be16 etype_mask = (ma ? nl_attr_get_be16(ma) : OVS_BE16_MAX);
+                    ovs_be16 etype_key = ntohs(nl_attr_get_be16(a));
+                    VLOG_INFO("%s %d. etype:%u/0x%x.", __FUNCTION__, __LINE__, etype_key, etype_mask);
+                    /* when match VLAN, ethertype is 0x8100, upper layer ignores this.
+                     * when match IPv4, ethertype is 0x800, upper layer ignores this.
+                     * when match IPv6, ethertype is 0x86dd, upper layer ignores this.
+                     */
+                    if ((0 != etype_mask) && (0 != etype_key)) {
+                        /* not allow mask by openflow standard */
+                        sprintf(etype_cmd_ar, " ETHER_TYPE %u", etype_key);
+                        VLOG_INFO("%s %d. etype:%u.", __FUNCTION__, __LINE__, etype_key);
+                    }
+                    break;
+                }
+
+                case OVS_KEY_ATTR_IPV4: {
+                    const struct ovs_key_ipv4 *attrkey = nl_attr_get(a);
+                    const struct ovs_key_ipv4 *attrmask = ma ? nl_attr_get(ma) : NULL;
+                    ovs_be32 src_key = attrkey->ipv4_src;
+                    ovs_be32 dst_key = attrkey->ipv4_dst;
+                    uint8_t proto = attrkey->ipv4_proto;
+                    uint8_t tos = attrkey->ipv4_tos;
+                    uint8_t ttl = attrkey->ipv4_ttl;
+                    uint8_t frag = attrkey->ipv4_frag;
+                    const ovs_be32 *src_mask = MASK(attrmask, ipv4_src);
+                    const ovs_be32 *dst_mask = MASK(attrmask, ipv4_dst);
+                    const uint8_t *proto_mask = MASK(attrmask, ipv4_proto);
+                    const uint8_t *tos_mask = MASK(attrmask, ipv4_tos);
+                    const uint8_t *ttl_mask = MASK(attrmask, ipv4_ttl);
+                    const uint8_t *frag_mask = MASK(attrmask, ipv4_frag);
+
+                    if (src_mask && (0 != *src_mask)) {
+                        char filed_value_ar[REDIS_CMD_FIELD_VALUE_MAX_LENGTH] = {0};
+                        //ovs_be32 field_mask = IP_ARGS(*src_mask);
+
+                        if (OVS_BE32_MAX == *src_mask) {
+                            sprintf(filed_value_ar, " SRC_IP "IP_FMT"", IP_ARGS(src_key));
+                        } else {
+                            if (!ip_is_cidr(*src_mask)) {
+                                VLOG_WARN("Invalid CIDR of SIP:"IP_FMT".", IP_ARGS(*src_mask));
+                                continue;
+                            }
+                            int prefix = ip_count_cidr_bits(*src_mask);
+                            sprintf(filed_value_ar, " SRC_IP "IP_FMT"/%u", IP_ARGS(src_key), prefix);
+                        }
+                        strcat(cmd_ar, filed_value_ar);
+                        VLOG_INFO("%s %d. SIP:"IP_FMT".", __FUNCTION__, __LINE__, IP_ARGS(src_key));
+                        VLOG_INFO("%s %d. SIP mask:"IP_FMT".", __FUNCTION__, __LINE__, IP_ARGS(*src_mask));
+                    }
+                    if (dst_mask && (0 != *dst_mask)) {
+                        char filed_value_ar[REDIS_CMD_FIELD_VALUE_MAX_LENGTH] = {0};
+                        //ovs_be32 field_mask = IP_ARGS(*dst_mask);
+
+                        if (OVS_BE32_MAX == *dst_mask) {
+                            sprintf(filed_value_ar, " DST_IP "IP_FMT"", IP_ARGS(dst_key));
+                        } else {
+                            if (!ip_is_cidr(*dst_mask)) {
+                                VLOG_WARN("Invalid CIDR of DIP:"IP_FMT".", IP_ARGS(*dst_mask));
+                                continue;
+                            }
+                            int prefix = ip_count_cidr_bits(*dst_mask);
+                            sprintf(filed_value_ar, " DST_IP "IP_FMT"/%u", IP_ARGS(dst_key), prefix);
+                        }
+                        strcat(cmd_ar, filed_value_ar);
+                        VLOG_INFO("%s %d. DIP:"IP_FMT".", __FUNCTION__, __LINE__, IP_ARGS(dst_key));
+                        VLOG_INFO("%s %d. DIP mask:"IP_FMT".", __FUNCTION__, __LINE__, IP_ARGS(*dst_mask));
+                    }
+                    if (proto_mask && (0 != *proto_mask)) {
+                        char filed_value_ar[REDIS_CMD_FIELD_VALUE_MAX_LENGTH] = {0};
+
+                        /* not allow mask by openflow standard */
+                        sprintf(filed_value_ar, " IP_PROTOCOL %d", proto);
+                        strcat(cmd_ar, filed_value_ar);
+                        VLOG_INFO("%s %d. IP protocol:%d.", __FUNCTION__, __LINE__, proto);
+                    }
+                    if (tos_mask && (0 != *tos_mask)) {
+                        /* not allow mask by openflow standard */
+                        VLOG_WARN("NOT handle IP tos:%d.", tos);
+                        VLOG_INFO("%s %d. IP tos:%d.", __FUNCTION__, __LINE__, tos);
+                    }
+                    if (ttl_mask && (0 != *ttl_mask)) {
+                        /* not allow mask by openflow standard */
+                        VLOG_WARN("NOT handle IP ttl:%d.", ttl);
+                        VLOG_INFO("%s %d. IP TTL:%d.", __FUNCTION__, __LINE__, ttl);
+                    }
+                    if (frag_mask && (0 != *frag_mask)) {
+                        /* not allow mask by openflow standard */
+                        VLOG_WARN("NOT handle IP frag:%d.", frag);
+                        VLOG_INFO("%s %d. IP frag:%d.", __FUNCTION__, __LINE__, frag);
+                    }
+                    break;
+                }
+
+                case OVS_KEY_ATTR_TCP:
+                case OVS_KEY_ATTR_UDP:
+                case OVS_KEY_ATTR_SCTP: {
+                    const struct ovs_key_tcp *attrkey = nl_attr_get(a);
+                    const struct ovs_key_tcp *attrmask = ma ? nl_attr_get(ma) : NULL;
+                    ovs_be16 src_key = attrkey->tcp_src;
+                    ovs_be16 dst_key = attrkey->tcp_dst;
+                    const ovs_be16 *src_mask = MASK(attrmask, tcp_src);
+                    const ovs_be16 *dst_mask = MASK(attrmask, tcp_dst);
+
+                    if (src_mask && (0 != *src_mask)) {
+                        char filed_value_ar[REDIS_CMD_FIELD_VALUE_MAX_LENGTH] = {0};
+
+                        /* not allow mask by openflow standard */
+                        sprintf(filed_value_ar, " L4_SRC_PORT %d", ntohs(src_key));
+                        strcat(cmd_ar, filed_value_ar);
+                        VLOG_INFO("%s %d. L4 src:%d.", __FUNCTION__, __LINE__, ntohs(src_key));
+                    }
+                    if (dst_mask && (0 != *dst_mask)) {
+                        char filed_value_ar[REDIS_CMD_FIELD_VALUE_MAX_LENGTH] = {0};
+
+                        /* not allow mask by openflow standard */
+                        sprintf(filed_value_ar, " L4_DST_PORT %d", ntohs(dst_key));
+                        strcat(cmd_ar, filed_value_ar);
+                        VLOG_INFO("%s %d. L4 dst:%d.", __FUNCTION__, __LINE__, ntohs(dst_key));
+                    }
+                    break;
+                }
+
+                case OVS_KEY_ATTR_TCP_FLAGS: {
+                    if (ma && (0 != nl_attr_get_be16(ma))) {
+                        /* not allow mask by openflow standard */
+                        VLOG_WARN("NOT handle TCP flags:%u.", ntohs(nl_attr_get_be16(a)));
+                        VLOG_INFO("%s %d. TCP flags:%u.", __FUNCTION__, __LINE__, ntohs(nl_attr_get_be16(a)));
+                    }
+                    break;
+                }
+
+                case OVS_KEY_ATTR_ICMP: {
+                    const struct ovs_key_icmp *attrkey = nl_attr_get(a);
+                    const struct ovs_key_icmp *attrmask = ma ? nl_attr_get(ma) : NULL;
+                    uint8_t type_key = attrkey->icmp_type;
+                    uint8_t code_key = attrkey->icmp_code;
+                    const uint8_t *type_mask = MASK(attrmask, icmp_type);
+                    const uint8_t *code_mask = MASK(attrmask, icmp_code);
+
+                    if (type_mask && (0 != *type_mask)) {
+                        char filed_value_ar[REDIS_CMD_FIELD_VALUE_MAX_LENGTH] = {0};
+
+                        /* not allow mask by openflow standard */
+                        sprintf(filed_value_ar, " ICMP_TYPE %d", type_key);
+                        strcat(cmd_ar, filed_value_ar);
+                        VLOG_INFO("%s %d. ICMP type:%d.", __FUNCTION__, __LINE__, type_key);
+                    }
+                    if (code_mask && (0 != *code_mask)) {
+                        char filed_value_ar[REDIS_CMD_FIELD_VALUE_MAX_LENGTH] = {0};
+
+                        /* not allow mask by openflow standard */
+                        sprintf(filed_value_ar, " ICMP_CODE %d", code_key);
+                        strcat(cmd_ar, filed_value_ar);
+                        VLOG_INFO("%s %d. ICMP code:%d.", __FUNCTION__, __LINE__, code_key);
+                    }
+                    break;
+                }
+
+                case OVS_KEY_ATTR_IPV6: {
+                    const struct ovs_key_ipv6 *attrkey = nl_attr_get(a);
+                    const struct ovs_key_ipv6 *attrmask = ma ? nl_attr_get(ma) : NULL;
+                    const struct in6_addr *src_key = &attrkey->ipv6_src;
+                    const struct in6_addr *dst_key = &attrkey->ipv6_dst;
+                    const struct in6_addr *src_mask = MASK(attrmask, ipv6_src);
+                    const struct in6_addr *dst_mask = MASK(attrmask, ipv6_dst);
+
+                    if (src_mask && !ipv6_mask_is_any(src_mask)) {
+                        char filed_value_ar[REDIS_CMD_FIELD_VALUE_MAX_LENGTH] = {0};
+                        char v6_buf_ar[INET6_ADDRSTRLEN] = {0};
+                        inet_ntop(AF_INET6, src_key, v6_buf_ar, sizeof v6_buf_ar);
+
+                        if (ipv6_mask_is_exact(src_mask)) {
+                            sprintf(filed_value_ar, " SRC_IPV6 %s", v6_buf_ar);
+                        } else {
+                            if (!ipv6_is_cidr(src_mask)) {
+                                inet_ntop(AF_INET6, src_mask, v6_buf_ar, sizeof v6_buf_ar);
+                                VLOG_WARN("Invalid CIDR of SIPv6:%s.", v6_buf_ar);
+                                continue;
+                            }
+                            int prefix = ipv6_count_cidr_bits(src_mask);
+                            sprintf(filed_value_ar, " SRC_IPV6 %s/%u", v6_buf_ar, prefix);
+                        }
+                        strcat(cmd_ar, filed_value_ar);
+                        table_type = NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3V6;
+                        VLOG_INFO("%s %d. SIPv6:%s.", __FUNCTION__, __LINE__, v6_buf_ar);
+                        inet_ntop(AF_INET6, src_mask, v6_buf_ar, sizeof v6_buf_ar);
+                        VLOG_INFO("%s %d. SIPv6 mask:%s.", __FUNCTION__, __LINE__, v6_buf_ar);
+                    }
+                    if (dst_mask && !ipv6_mask_is_any(dst_mask)) {
+                        char filed_value_ar[REDIS_CMD_FIELD_VALUE_MAX_LENGTH] = {0};
+                        char v6_buf_ar[INET6_ADDRSTRLEN] = {0};
+                        inet_ntop(AF_INET6, dst_key, v6_buf_ar, sizeof v6_buf_ar);
+
+                        if (ipv6_mask_is_exact(dst_mask)) {
+                            sprintf(filed_value_ar, " DST_IPV6 %s", v6_buf_ar);
+                        } else {
+                            if (!ipv6_is_cidr(dst_mask)) {
+                                inet_ntop(AF_INET6, dst_mask, v6_buf_ar, sizeof v6_buf_ar);
+                                VLOG_WARN("Invalid CIDR of DIPv6:%s.", v6_buf_ar);
+                                continue;
+                            }
+                            int prefix = ipv6_count_cidr_bits(dst_mask);
+                            sprintf(filed_value_ar, " DST_IPV6 %s/%u", v6_buf_ar, prefix);
+                        }
+                        strcat(cmd_ar, filed_value_ar);
+                        table_type = NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3V6;
+                        VLOG_INFO("%s %d. DIPv6:%s.", __FUNCTION__, __LINE__, v6_buf_ar);
+                        inet_ntop(AF_INET6, dst_mask, v6_buf_ar, sizeof v6_buf_ar);
+                        VLOG_INFO("%s %d. DIPv6 mask:%s.", __FUNCTION__, __LINE__, v6_buf_ar);
+                    }
+                    break;
+                }
+
+                case OVS_KEY_ATTR_ICMPV6: {
+                    const struct ovs_key_icmpv6 *attrkey = nl_attr_get(a);
+                    const struct ovs_key_icmpv6 *attrmask = ma ? nl_attr_get(ma) : NULL;
+                    uint8_t type_key = attrkey->icmpv6_type;
+                    uint8_t code_key = attrkey->icmpv6_code;
+                    const uint8_t *type_mask = MASK(attrmask, icmpv6_type);
+                    const uint8_t *code_mask = MASK(attrmask, icmpv6_code);
+
+                    if (type_mask && (0 != *type_mask)) {
+                        char filed_value_ar[REDIS_CMD_FIELD_VALUE_MAX_LENGTH] = {0};
+
+                        /* not allow mask by openflow standard */
+                        sprintf(filed_value_ar, " ICMPV6_TYPE %d", type_key);
+                        strcat(cmd_ar, filed_value_ar);
+                        table_type = NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3V6;
+                        VLOG_INFO("%s %d. ICMPv6 type:%d.", __FUNCTION__, __LINE__, type_key);
+                    }
+                    if (code_mask && (0 != *code_mask)) {
+                        char filed_value_ar[REDIS_CMD_FIELD_VALUE_MAX_LENGTH] = {0};
+
+                        /* not allow mask by openflow standard */
+                        sprintf(filed_value_ar, " ICMPV6_CODE %d", code_key);
+                        strcat(cmd_ar, filed_value_ar);
+                        table_type = NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3V6;
+                        VLOG_INFO("%s %d. ICMPv6 code:%d.", __FUNCTION__, __LINE__, code_key);
+                    }
+                    break;
+                }
+
+                default: {
+                    char namebuf[OVS_KEY_ATTR_STR_SIZE] = {0};
+                    ovs_key_attr_to_string(attr_type, namebuf);
+                }
+            }
+        }
+    }
+
+    /* set type before action */
+    if (NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3 == table_type) {
+        if (0 != strlen(etype_cmd_ar)) {
+            strcat(cmd_ar, etype_cmd_ar);
+        }
+        strcat(cmd_ar, " IP_TYPE IPV4ANY");
+    } else {
+        /* SONiC limitation: cannot set ethertype for IPv6
+         */
+        strcat(cmd_ar, " IP_TYPE IPV6ANY");
+    }
+
+    if (0 != actions_len) {
+        const struct nlattr *a;
+        unsigned int left;
+
+        NL_ATTR_FOR_EACH (a, left, actions, actions_len) {
+            int type = nl_attr_type(a);
+            int expected_len = odp_action_len(nl_attr_type(a));
+            VLOG_INFO("%s %d. action type %u.", __FUNCTION__, __LINE__, type);
+            if ((expected_len != ATTR_LEN_VARIABLE) && (nl_attr_get_size(a) != expected_len)) {
+                VLOG_ERR("%s %d. bad length:expect %ld for:%d", __FUNCTION__, __LINE__, nl_attr_get_size(a), expected_len);
+                return;
+            }
+
+            switch (type) {
+                case OVS_ACTION_ATTR_OUTPUT: {
+                    char filed_value_ar[REDIS_CMD_FIELD_VALUE_MAX_LENGTH] = {0};
+                    char name_ar[NETDEV_SONIC_PORT_MAX_NAME_LEN] = {0};
+                    int port_no = nl_attr_get_u32(a);
+
+                    if (0xfffa == port_no) {  /* OFPP_NORMAL */
+                        strcat(cmd_ar, " PACKET_ACTION FORWARD");
+                    } else {
+                        if (netdev_sonic_port_name_by_number(port_no, name_ar)) {
+                            netdev_sonic_port_name_by_number(port_no, name_ar);
+                            sprintf(filed_value_ar, " REDIRECT_ACTION %s", name_ar);
+                            strcat(cmd_ar, filed_value_ar);
+                        }
+                    }
+
+                    VLOG_INFO("%s %d. OVS_ACTION_ATTR_OUTPUT %u.", __FUNCTION__, __LINE__, nl_attr_get_u32(a));
+                    break;
+                }
+                case OVS_ACTION_ATTR_DROP: {
+                    strcat(cmd_ar, " PACKET_ACTION DROP");
+                    VLOG_INFO("%s %d. OVS_ACTION_ATTR_DROP", __FUNCTION__, __LINE__);
+                    break;
+                }
+
+                default:
+                    strcat(cmd_ar, " PACKET_ACTION FORWARD");
+                    VLOG_INFO("%s %d. not handle %d.", __FUNCTION__, __LINE__, type);
+                    break;
+            }
+        }
+    }
+    /* hset ACL_RULE|ACL_ETH999|65535 PRIORITY 65535
+        VLAN_ID 4094 SRC_IP 192.168.111.100/32 DST_IP 192.168.111.101/32
+        IP_PROTOCOL 255 L4_SRC_PORT 65535 L4_DST_PORT 65533
+        IP_TYPE IPV4ANY ICMP_CODE 255 ICMP_TYPE 233 ETHER_TYPE 0x8892
+        REDIRECT_ACTION Ethernet999
+     */
+
+    if (INVALID_IFINDEX == ifindex) {
+        VLOG_ERR("NOT handle the flow. Must specified in_port of flow.");
+        return;
+    } else {
+        char redis_cmd_ar[REDIS_CMD_MAX_LENGTH] = {0};
+        char ace_name_ar[REDIS_CMD_ACL_TABLE_NAME_LEN] = {0};
+        char port_ar[REDIS_CMD_MAX_LENGTH] = {0};
+
+        if (!netdev_sonic_port_name_by_number(ifindex, port_ar)) {
+            VLOG_WARN("NOT handle the flow. Invalid in_port %d of flow.", ifindex);
+            return;
+        }
+
+        dpif_sonic_construct_ace_name(ace_name_ar, port_ar, priority, table_type);
+        sprintf(redis_cmd_ar, "HSET %s PRIORITY %d%s", ace_name_ar, priority, cmd_ar);
+        VLOG_INFO("%s %d. %s.", __FUNCTION__, __LINE__, redis_cmd_ar);
+
+        if (netdev_sonic_port_acl_set(ifindex, priority, table_type, true)) {
+            char table_cmd_ar[REDIS_CMD_MAX_LENGTH] = {0};
+            char table_ar[REDIS_CMD_MAX_LENGTH] = {0};
+            dpif_sonic_construct_acl_table_name(table_ar, port_ar, table_type);
+
+            sprintf(table_cmd_ar, "HSET %s policy_desc %s_in ports@ %s stage ingress type %s",
+                    table_ar, port_ar, port_ar,
+                    ((NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3 == table_type) ? "L3" : "L3V6"));
+            VLOG_INFO("%s %d. %s.", __FUNCTION__, __LINE__, table_cmd_ar);
+            connectRedis(table_cmd_ar, redis_cmd_ar, REDIS_CMD_TYPE_ADD);
+        } else {
+            connectRedis(NULL, redis_cmd_ar, REDIS_CMD_TYPE_ADD);
+        }
+
+        /* update store after REDIS
+         */
+        netdev_sonic_port_priority_set(ifindex, priority, table_type, true);
+    }
+}
+
+static void dpif_sonic_construct_ace_unset(const struct nlattr *key, size_t key_len)
+{
+    /* initial ifindex to -1 (because real sonic port start from 0)
+     */
+    int ifindex = INVALID_IFINDEX;
+    int priority = 0;
+    int table_type = NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3;
+
+    if (0 == key_len) {
+        return;
+    }
+
+    if (0 != key_len) {
+        const struct nlattr *a;
+        unsigned int left;
+        NL_ATTR_FOR_EACH (a, left, key, key_len) {
+            int /*enum ovs_key_attr*/ attr_type = nl_attr_type(a);
+
+            switch (attr_type) {
+                case OVS_KEY_ATTR_PRIORITY: {
+                    priority = nl_attr_get_be32(a);
+                    break;
+                }
+
+                case OVS_KEY_ATTR_IN_PORT: {
+                    ifindex = nl_attr_get_be32(a);
+                    break;
+                }
+
+                case OVS_KEY_ATTR_ETHERTYPE: {
+                    ovs_be16 etype_key = ntohs(nl_attr_get_be16(a));
+                    VLOG_INFO("%s %d. etype:0x%X.", __FUNCTION__, __LINE__, etype_key);
+                    if (ETH_TYPE_IPV6 == etype_key) {
+                        table_type = NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3V6;
+                    }
+                    break;
+                }
+
+                default: {
+                    char namebuf[OVS_KEY_ATTR_STR_SIZE] = {0};
+                    ovs_key_attr_to_string(attr_type, namebuf);
+                }
+            }
+        }
+    }
+
+    /* when delete, must remove all fileds, but openflow does not specify action when deleting.
+     * so here only specified ACE name, and hgetall the ACE to remove fields
+     */
+    if (INVALID_IFINDEX == ifindex) {
+        VLOG_ERR("NOT handle the flow. Must specified in_port of flow.");
+        return;
+    } else {
+        char ace_name_ar[REDIS_CMD_ACL_TABLE_NAME_LEN] = {0};
+        char port_ar[REDIS_CMD_MAX_LENGTH] = {0};
+
+        if (!netdev_sonic_port_name_by_number(ifindex, port_ar)) {
+            VLOG_WARN("NOT handle the flow. Invalid in_port %d of flow.", ifindex);
+            return;
+        }
+
+        dpif_sonic_construct_ace_name(ace_name_ar, port_ar, priority, table_type);
+        VLOG_INFO("%s %d. %s.", __FUNCTION__, __LINE__, ace_name_ar);
+
+        if (netdev_sonic_port_acl_set(ifindex, priority, table_type, false)) {
+            char table_cmd_ar[REDIS_CMD_MAX_LENGTH] = {0};
+            char table_ar[REDIS_CMD_MAX_LENGTH] = {0};
+            dpif_sonic_construct_acl_table_name(table_ar, port_ar, table_type);
+
+            sprintf(table_cmd_ar, "HDEL %s policy_desc ports@ stage type", table_ar);
+            VLOG_INFO("%s %d. %s.", __FUNCTION__, __LINE__, table_cmd_ar);
+            connectRedis(table_cmd_ar, ace_name_ar, REDIS_CMD_TYPE_REMOVE);
+        } else {
+            connectRedis(NULL, ace_name_ar, REDIS_CMD_TYPE_REMOVE);
+        }
+
+        /* update store after REDIS
+         */
+        netdev_sonic_port_priority_set(ifindex, priority, table_type, false);
+    }
+}
+
 /* sonic supports match
  * in_port, ipv4, ethertype, L4 port, ip protocol, icmp type, vlan, tcp flag
  * NOT support MAC
  */
 static void dpif_sonic_print_flow(const struct nlattr *key, size_t key_len,
-        const struct nlattr *mask, size_t mask_len, const struct nlattr *actions, size_t actions_len) {
-    if (0 == actions_len) {
+        const struct nlattr *mask, size_t mask_len, const struct nlattr *actions, size_t actions_len)
+{
+VLOG_INFO("%s %d. key_len:%lu. mask_len:%lu. actions_len:%lu.", __FUNCTION__, __LINE__, key_len, mask_len, actions_len);
+    if ((0 == actions_len) || (0 == key_len)) {
         return;
     }
+
     if (0 != key_len) {
         const struct nlattr *a;
         unsigned int left;
@@ -1123,7 +1792,7 @@ static void dpif_sonic_print_flow(const struct nlattr *key, size_t key_len,
             switch (attr_type) {
                 case OVS_KEY_ATTR_IN_PORT: {
                     bool is_exact = ma ? odp_mask_attr_is_exact(ma) : true;
-                    int attr_mask = 0;
+                    int attr_mask = OVS_BE32_MAX;
 
                     if (!is_exact) {
                         attr_mask = nl_attr_get_be32(ma);
@@ -1218,7 +1887,7 @@ static void dpif_sonic_print_flow(const struct nlattr *key, size_t key_len,
                         VLOG_INFO("%s %d. IP TTL mask:%X.", __FUNCTION__, __LINE__, *ttl_mask);
                     }
                     if (frag_mask && (0 != *frag_mask)) {
-                        VLOG_INFO("%s %d. IP protocol:%d.", __FUNCTION__, __LINE__, frag);
+                        VLOG_INFO("%s %d. IP frag:%d.", __FUNCTION__, __LINE__, frag);
                         VLOG_INFO("%s %d. IP frag mask:%X.", __FUNCTION__, __LINE__, *frag_mask);
                     }
                     break;
@@ -1307,4 +1976,100 @@ static void dpif_sonic_print_flow(const struct nlattr *key, size_t key_len,
             }
         }
     }
+}
+/* arguments
+ * cmd_p: command string for config DB; ACE name when removed
+ * table_p: ACL table name
+ * type: REDIS_CMD_TYPE_XXX
+ */
+static void connectRedis(char *table_cmd_p, char *cmd_p, int type)
+{
+    struct timeval timeout = { 1, 500000 }; // 1.5 seconds
+    redisReply *reply;
+    redisContext *c;
+VLOG_INFO("%s %d. cmd %s.", __FUNCTION__, __LINE__, cmd_p);
+    c = redisConnectWithTimeout("127.0.0.1", 6379, timeout);
+    if (c->err) {
+        printf("error: %s\n", c->errstr);
+        VLOG_INFO("%s %d. error: %s.", __FUNCTION__, __LINE__, c->errstr);
+        if (c) {
+            redisFree(c);
+        }
+        return;
+    }
+    VLOG_INFO("connection OK\n");
+
+    /* enter config DB */
+    reply = redisCommand(c,"select 4");
+    printf("select 4:%s\n", reply->str);
+    freeReplyObject(reply);
+
+    if (REDIS_CMD_TYPE_ADD) {
+        if (NULL != table_cmd_p) { /* need to create ACL table */
+            reply = redisCommand(c, "%s", table_cmd_p);
+            if (NULL != reply) {
+                if (REDIS_REPLY_ERROR == reply->type) {
+                    VLOG_ERR("Failed cmd: %s error:%s\n", table_cmd_p, reply->str);
+                } else {
+                    VLOG_INFO("OK: %s\n", table_cmd_p);
+                }
+            }
+            freeReplyObject(reply);
+        }
+
+        reply = redisCommand(c, "%s", cmd_p);
+        if (NULL != reply) {
+            if (REDIS_REPLY_ERROR == reply->type) {
+                VLOG_ERR("Failed cmd: %s error:%s\n", cmd_p, reply->str);
+            } else {
+                VLOG_INFO("OK: %s\n", cmd_p);
+            }
+        }
+        freeReplyObject(reply);
+    } else {
+        /* remove: get all fileds to remove
+         */
+        reply = redisCommand(c, "hgetall %s", cmd_p);
+
+        if (REDIS_REPLY_ERROR == reply->type) {
+            VLOG_ERR("hgetall %s REDIS_REPLY_ERROR:%s", cmd_p, reply->str);
+        } else if (REDIS_REPLY_ARRAY != reply->type) {
+            VLOG_ERR("hgetall %s ! REDIS_REPLY_ARRAY:%d", cmd_p, reply->type);
+        } else {
+            char cmd_ar[REDIS_CMD_MAX_LENGTH] = {0}; /* collect remove fileds */
+            int i = 0;
+
+            sprintf(cmd_ar, "hdel %s", cmd_p);
+            for (i = 0; i < reply->elements; ++i) {
+                if (0 == (i%2)) {
+                    strcat(cmd_ar, reply->element[i]->str);
+                }
+            }
+            freeReplyObject(reply);
+
+            reply = redisCommand(c, "%s", cmd_ar);
+            if (NULL != reply) {
+                if (REDIS_REPLY_ERROR == reply->type) {
+                    VLOG_ERR("Failed cmd: %s error:%s\n", cmd_ar, reply->str);
+                } else {
+                    VLOG_INFO("OK: %s\n", cmd_ar);
+                }
+            }
+            freeReplyObject(reply);
+        }
+
+        if (NULL != table_cmd_p) { /* remove table after removing ACE */
+            reply = redisCommand(c, "%s", table_cmd_p);
+            if (NULL != reply) {
+                if (REDIS_REPLY_ERROR == reply->type) {
+                    VLOG_ERR("Failed cmd: %s error:%s\n", table_cmd_p, reply->str);
+                } else {
+                    VLOG_INFO("OK: %s\n", table_cmd_p);
+                }
+            }
+            freeReplyObject(reply);
+        }
+    }
+
+   redisFree(c);
 }
