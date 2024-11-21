@@ -2391,7 +2391,7 @@ alloc_ofp_port(struct ofproto *ofproto, const char *netdev_name)
     uint16_t port_idx;
 
     port_idx = simap_get(&ofproto->ofp_requests, netdev_name);
-    port_idx = port_idx ? port_idx : UINT16_MAX;
+    port_idx = (-1 != port_idx) ? port_idx : UINT16_MAX;
 
     if (port_idx >= ofproto->max_ports
         || ofport_get_usage(ofproto, u16_to_ofp(port_idx)) == LLONG_MAX) {

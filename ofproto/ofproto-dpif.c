@@ -3968,7 +3968,7 @@ port_add(struct ofproto *ofproto_, struct netdev *netdev, ofp_port_t ofp_port)
 
     dp_port_name = netdev_vport_get_dpif_port(netdev, namebuf, sizeof namebuf);
     if (!dpif_port_exists(ofproto->backer->dpif, dp_port_name)) {
-        odp_port_t port_no = ((0 != ofp_port) ? ofp_port : ODPP_NONE);
+        odp_port_t port_no = ((-1 != ofp_port) ? ofp_port : ODPP_NONE);
         int error;
 
         error = dpif_port_add(ofproto->backer->dpif, netdev, &port_no);

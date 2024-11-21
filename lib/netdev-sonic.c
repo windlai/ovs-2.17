@@ -185,11 +185,6 @@ static void read_features(struct netdev_sonic *netdev);
 static int do_ethtool(const char *name, struct ethtool_cmd *ecmd, int cmd, const char *cmd_name);
 
 
-#ifdef WIND_FAKE
-static int getFakePortIfindex(const char *netdev_name);
-#endif
-
-
 
 
 const struct netdev_class netdev_sonic_class = {
@@ -296,7 +291,7 @@ int netdev_sonic_port_add(const char *port_name_p, int *port_no)
     } else {
         ifindex = (NETDEV_SONIC_PORT_MAX_COUNT - 1);
     }
-VLOG_INFO("%s %d. ifindex:%d.", __FUNCTION__, __LINE__, ifindex);
+
     /* OFPP_NONE(0xffff) is bridge ifindex, ignore it
      */
     if (NETDEV_SONIC_PORT_MAX_COUNT <= ifindex) {
@@ -327,6 +322,11 @@ int netdev_sonic_port_del(int port_no)
 
 int netdev_sonic_port_query_by_number(int port_no, netdev_sonic_port_t *data_p)
 {
+    if (NETDEV_SONIC_PORT_MAX_COUNT <= port_no) {
+        VLOG_ERR("%s %d. invalid port_no:%d.", __FUNCTION__, __LINE__, port_no);
+        return EOPNOTSUPP;
+    }
+
     if (0 != port_ar[port_no].active) {
         strcpy(data_p->name_ar, port_ar[port_no].name_ar);
         data_p->ifindex = port_ar[port_no].ifindex;
@@ -371,7 +371,6 @@ int netdev_sonic_port_next(netdev_sonic_port_t *data_p)
 
 bool netdev_sonic_port_name_by_number(int port_no, char *name_p)
 {
-    VLOG_INFO("%s %d. port_no:%d.", __FUNCTION__, __LINE__, port_no);
     if (NETDEV_SONIC_PORT_MAX_COUNT > port_no) {
         if (0 != port_ar[port_no].active) {
             strcpy(name_p, port_ar[port_no].name_ar);
@@ -385,7 +384,7 @@ bool netdev_sonic_port_name_by_number(int port_no, char *name_p)
 bool netdev_sonic_port_acl_set(int port_no, int priority, int table_type, bool add)
 {
     int idx = 0;
-    VLOG_INFO("%s %d. port_no:%d. priority:%d. table_type:%d.", __FUNCTION__, __LINE__, port_no, priority, table_type);
+
     if (NETDEV_SONIC_PORT_MAX_COUNT > port_no) {
         if (NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3 == table_type) {
             for (idx = 0; idx < NETDEV_SONIC_PORT_MAX_ACE_CNT; idx++) {
@@ -423,7 +422,7 @@ bool netdev_sonic_port_acl_set(int port_no, int priority, int table_type, bool a
 bool netdev_sonic_port_priority_set(int port_no, int priority, int table_type, bool add)
 {
     int idx = 0;
-    VLOG_INFO("%s %d. port_no:%d. priority:%d. table_type:%d.", __FUNCTION__, __LINE__, port_no, priority, table_type);
+
     if (NETDEV_SONIC_PORT_MAX_COUNT > port_no) {
         if (NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3 == table_type) {
             if (add) {
@@ -474,7 +473,7 @@ bool netdev_sonic_port_priority_set(int port_no, int priority, int table_type, b
 bool netdev_sonic_port_priority_valid(int port_no, int priority)
 {
     int idx = 0;
-    VLOG_INFO("%s %d. port_no:%d. priority:%d.", __FUNCTION__, __LINE__, port_no, priority);
+
     if ((NETDEV_SONIC_REDIS_ACL_RULE_PRIORITY_MIN > priority)
             || (NETDEV_SONIC_REDIS_ACL_RULE_PRIORITY_MAX < priority)) {
         VLOG_INFO("%s %d. port_no:%d. priority %d is out of range.", __FUNCTION__, __LINE__, port_no, priority);
@@ -574,7 +573,11 @@ netdev_sonic_get_etheraddr(const struct netdev *netdev_, struct eth_addr *mac)
     netdev->ether_addr_error = get_etheraddr(netdev_get_name(netdev_),
                                              &netdev->etheraddr);
     ovs_mutex_unlock(&netdev->mutex);
-    return netdev->ether_addr_error;;
+
+    if (!netdev->ether_addr_error) {
+        *mac = netdev->etheraddr;
+    }
+    return netdev->ether_addr_error;
 }
 
 static int
@@ -913,19 +916,6 @@ netdev_sonic_get_status(const struct netdev *netdev_, struct smap *smap)
 {
     struct netdev_sonic *netdev = netdev_sonic_cast(netdev_);
     int error = 0;
-    VLOG_INFO("%s %d.", __FUNCTION__, __LINE__);
-
-#ifdef WIND_FAKE
-    char *netdev_name = netdev_get_name(netdev_);
-    int ifindex = getFakePortIfindex(netdev_name);
-    VLOG_INFO("%s %d. netdev_name:%s.", __FUNCTION__, __LINE__, netdev_name);
-    if (0 >= ifindex) {
-        smap_add(smap, "driver_name", netdev_name);
-        smap_add(smap, "driver_version", "unknown");
-        smap_add(smap, "firmware_version", "unknown");
-        return 0;
-    }
-#endif
 
     ovs_mutex_lock(&netdev->mutex);
 
@@ -952,7 +942,6 @@ netdev_sonic_arp_lookup(const struct netdev *netdev,
     struct sockaddr_in sin;
     int retval;
 
-    VLOG_INFO("%s %d.", __FUNCTION__, __LINE__);
     memset(&r, 0, sizeof r);
     memset(&sin, 0, sizeof sin);
     sin.sin_family = AF_INET;
@@ -1041,17 +1030,6 @@ static int get_etheraddr(const char *netdev_name, struct eth_addr *ea)
     int hwaddr_family;
     int error;
 
-#ifdef WIND_FAKE
-    int ifindex = getFakePortIfindex(netdev_name);
-    VLOG_INFO("%s %d. netdev_name:%s.", __FUNCTION__, __LINE__, netdev_name);
-    if (0 >= ifindex) {
-        char mac_ar[ETH_ADDR_LEN] = {0};
-        mac_ar[ETH_ADDR_LEN - 1] = ifindex;
-        memcpy(ea, mac_ar, ETH_ADDR_LEN);
-        return 0;
-    }
-#endif
-
     memset(&ifr, 0, sizeof ifr);
     ovs_strzcpy(ifr.ifr_name, netdev_name, sizeof ifr.ifr_name);
     //COVERAGE_INC(netdev_get_hwaddr);
@@ -1082,15 +1060,6 @@ static int get_ethmtu(struct netdev_sonic *netdev, int *mtup)
     int error;
     struct ifreq ifr;
 
-#ifdef WIND_FAKE
-    int ifindex = getFakePortIfindex(netdev_name);
-    VLOG_INFO("%s %d. netdev_name:%s.", __FUNCTION__, __LINE__, netdev_name);
-    if (0 >= ifindex) {
-        *mtup = 1500;
-        return 0;
-    }
-#endif
-
     netdev->netdev_mtu_error = af_inet_ifreq_ioctl(
             netdev_get_name(&netdev->up), &ifr, SIOCGIFMTU, "SIOCGIFMTU");
     netdev->mtu = ifr.ifr_mtu;
@@ -1110,18 +1079,9 @@ static int get_ifindex(const struct netdev *netdev_, int *ifindexp)
     struct ifreq ifr;
     int error;
 
-#ifdef WIND_FAKE
-    int ifindex = getFakePortIfindex(netdev_name);
-    VLOG_INFO("%s %d. netdev_name:%s.", __FUNCTION__, __LINE__, netdev_name);
-    if (0 >= ifindex) {
-        *ifindexp = ifindex;
-        return ifindex;
-    }
-#endif
-
     //fake test database ???
     int idx = 0;
-    VLOG_INFO("%s %d. netdev_name:%s.", __FUNCTION__, __LINE__, netdev_name);
+
     for (idx = 0; idx < NETDEV_SONIC_PORT_MAX_COUNT; idx++)
     {
         if (0 == strcmp(netdev_name, port_ar[idx].name_ar))
@@ -1153,26 +1113,6 @@ static void read_features(struct netdev_sonic *netdev)
     struct ethtool_cmd ecmd;
     uint32_t speed;
     int error;
-
-#ifdef WIND_FAKE
-    int ifindex = getFakePortIfindex(netdev_name);
-    VLOG_INFO("%s %d. netdev_name:%s.", __FUNCTION__, __LINE__, netdev_name);
-    if (0 >= ifindex) {
-        netdev->supported |= NETDEV_F_1GB_HD;
-        netdev->supported |= NETDEV_F_1GB_FD;
-        netdev->supported |= NETDEV_F_FIBER;
-        netdev->supported |= NETDEV_F_AUTONEG;
-        netdev->advertised |= NETDEV_F_1GB_HD;
-        netdev->advertised |= NETDEV_F_1GB_FD;
-        netdev->advertised |= NETDEV_F_FIBER;
-        netdev->advertised |= NETDEV_F_AUTONEG;
-        netdev->current = NETDEV_F_1GB_FD;
-        netdev->current |= NETDEV_F_FIBER;
-        netdev->current |= NETDEV_F_AUTONEG;
-        netdev->get_features_error = 0;
-        return;
-    }
-#endif
 
     //COVERAGE_INC(netdev_get_ethtool);
     memset(&ecmd, 0, sizeof ecmd);
@@ -1337,18 +1277,3 @@ static int do_ethtool(const char *name, struct ethtool_cmd *ecmd,
     return error;
 }
 
-
-#ifdef WIND_FAKE
-static int getFakePortIfindex(const char *netdev_name) {
-    int idx = 0;
-    VLOG_INFO("%s %d. netdev_name:%s.", __FUNCTION__, __LINE__, netdev_name);
-    for (idx = 0; idx < NETDEV_SONIC_PORT_MAX_COUNT; idx++)
-    {
-        if (0 == strcmp(netdev_name, port_ar[idx].name_ar))
-        {
-            return port_ar[idx].ifindex;
-        }
-    }
-    return -1;
-}
-#endif

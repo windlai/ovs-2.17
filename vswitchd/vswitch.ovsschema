@@ -271,7 +271,7 @@
        "ofport_request": {
          "type": {
            "key": {"type": "integer",
-                   "minInteger": 1,
+                   "minInteger": 0,
                    "maxInteger": 65279},
            "min": 0,
            "max": 1}},

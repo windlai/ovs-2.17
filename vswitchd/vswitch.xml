@@ -2616,7 +2616,7 @@
         </column>
 
         <column name="ofport_request"
-                type='{"type": "integer", "minInteger": 1, "maxInteger": 65279}'>
+                type='{"type": "integer", "minInteger": 0, "maxInteger": 65279}'>
           <p>
             Requested OpenFlow port number for this interface.
           </p>

@@ -4977,7 +4977,7 @@ iface_is_synthetic(const struct iface *iface)
 static ofp_port_t
 iface_validate_ofport__(size_t n, int64_t *ofport)
 {
-    return (n && *ofport >= 1 && *ofport < ofp_to_u16(OFPP_MAX)
+    return (n && *ofport >= 0 && *ofport < ofp_to_u16(OFPP_MAX)
             ? u16_to_ofp(*ofport)
             : OFPP_NONE);
 }

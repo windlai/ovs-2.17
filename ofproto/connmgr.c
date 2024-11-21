@@ -1890,8 +1890,12 @@ connmgr_flushed(struct connmgr *mgr)
         ofpact_put_OUTPUT(&ofpacts)->port = OFPP_NORMAL;
 
         match_init_catchall(&match);
-        ofproto_add_flow(mgr->ofproto, &match, 0, ofpacts.data,
-                                                  ofpacts.size);
+        /* SONiC does not need default table miss flow
+         */
+        if (0 != strcmp(mgr->ofproto->type, "sonic")) {
+            ofproto_add_flow(mgr->ofproto, &match, 0, ofpacts.data,
+                                                      ofpacts.size);
+        }
 
         ofpbuf_uninit(&ofpacts);
     }

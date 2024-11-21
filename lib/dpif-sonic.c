@@ -663,7 +663,6 @@ dpif_sonic_port_poll_wait(const struct dpif *dpif_)
 static bool dpif_sonic_port_valid_flow_priority(struct dpif *dpif,
                     odp_port_t port_no, int priority)
 {
-    VLOG_INFO("%s %d.", __FUNCTION__, __LINE__);
     return netdev_sonic_port_priority_valid((int) port_no, priority);
 }
 
@@ -1600,7 +1599,7 @@ static void dpif_sonic_construct_ace_set(const struct nlattr *key, size_t key_le
         NL_ATTR_FOR_EACH (a, left, actions, actions_len) {
             int type = nl_attr_type(a);
             int expected_len = odp_action_len(nl_attr_type(a));
-            VLOG_INFO("%s %d. action type %u.", __FUNCTION__, __LINE__, type);
+
             if ((expected_len != ATTR_LEN_VARIABLE) && (nl_attr_get_size(a) != expected_len)) {
                 VLOG_ERR("%s %d. bad length:expect %ld for:%d", __FUNCTION__, __LINE__, nl_attr_get_size(a), expected_len);
                 return;
@@ -1713,7 +1712,7 @@ static void dpif_sonic_construct_ace_unset(const struct nlattr *key, size_t key_
 
                 case OVS_KEY_ATTR_ETHERTYPE: {
                     ovs_be16 etype_key = ntohs(nl_attr_get_be16(a));
-                    VLOG_INFO("%s %d. etype:0x%X.", __FUNCTION__, __LINE__, etype_key);
+
                     if (ETH_TYPE_IPV6 == etype_key) {
                         table_type = NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3V6;
                     }
@@ -1771,7 +1770,6 @@ static void dpif_sonic_construct_ace_unset(const struct nlattr *key, size_t key_
 static void dpif_sonic_print_flow(const struct nlattr *key, size_t key_len,
         const struct nlattr *mask, size_t mask_len, const struct nlattr *actions, size_t actions_len)
 {
-VLOG_INFO("%s %d. key_len:%lu. mask_len:%lu. actions_len:%lu.", __FUNCTION__, __LINE__, key_len, mask_len, actions_len);
     if ((0 == actions_len) || (0 == key_len)) {
         return;
     }
@@ -1977,6 +1975,7 @@ VLOG_INFO("%s %d. key_len:%lu. mask_len:%lu. actions_len:%lu.", __FUNCTION__, __
         }
     }
 }
+
 /* arguments
  * cmd_p: command string for config DB; ACE name when removed
  * table_p: ACL table name
@@ -1987,10 +1986,9 @@ static void connectRedis(char *table_cmd_p, char *cmd_p, int type)
     struct timeval timeout = { 1, 500000 }; // 1.5 seconds
     redisReply *reply;
     redisContext *c;
-VLOG_INFO("%s %d. cmd %s.", __FUNCTION__, __LINE__, cmd_p);
+
     c = redisConnectWithTimeout("127.0.0.1", 6379, timeout);
     if (c->err) {
-        printf("error: %s\n", c->errstr);
         VLOG_INFO("%s %d. error: %s.", __FUNCTION__, __LINE__, c->errstr);
         if (c) {
             redisFree(c);
@@ -2001,65 +1999,68 @@ VLOG_INFO("%s %d. cmd %s.", __FUNCTION__, __LINE__, cmd_p);
 
     /* enter config DB */
     reply = redisCommand(c,"select 4");
-    printf("select 4:%s\n", reply->str);
+    VLOG_INFO("select 4:%s\n", reply->str);
     freeReplyObject(reply);
 
-    if (REDIS_CMD_TYPE_ADD) {
+    if (REDIS_CMD_TYPE_ADD == type) {
         if (NULL != table_cmd_p) { /* need to create ACL table */
-            reply = redisCommand(c, "%s", table_cmd_p);
+            reply = redisCommand(c, table_cmd_p);
             if (NULL != reply) {
                 if (REDIS_REPLY_ERROR == reply->type) {
-                    VLOG_ERR("Failed cmd: %s error:%s\n", table_cmd_p, reply->str);
+                    VLOG_ERR("Failed cmd: %s error:%s", table_cmd_p, reply->str);
                 } else {
-                    VLOG_INFO("OK: %s\n", table_cmd_p);
+                    VLOG_INFO("OK: %s", table_cmd_p);
                 }
             }
             freeReplyObject(reply);
         }
 
-        reply = redisCommand(c, "%s", cmd_p);
+        reply = redisCommand(c, cmd_p);
         if (NULL != reply) {
             if (REDIS_REPLY_ERROR == reply->type) {
-                VLOG_ERR("Failed cmd: %s error:%s\n", cmd_p, reply->str);
+                VLOG_ERR("Failed cmd: %s error:%s", cmd_p, reply->str);
             } else {
-                VLOG_INFO("OK: %s\n", cmd_p);
+                VLOG_INFO("OK: %s", cmd_p);
             }
         }
         freeReplyObject(reply);
     } else {
         /* remove: get all fileds to remove
          */
-        reply = redisCommand(c, "hgetall %s", cmd_p);
+        char send_cmd_ar[REDIS_CMD_MAX_LENGTH] = {0};
+        sprintf(send_cmd_ar, "hgetall %s", cmd_p);
+        reply = redisCommand(c, send_cmd_ar);
 
         if (REDIS_REPLY_ERROR == reply->type) {
             VLOG_ERR("hgetall %s REDIS_REPLY_ERROR:%s", cmd_p, reply->str);
         } else if (REDIS_REPLY_ARRAY != reply->type) {
             VLOG_ERR("hgetall %s ! REDIS_REPLY_ARRAY:%d", cmd_p, reply->type);
         } else {
-            char cmd_ar[REDIS_CMD_MAX_LENGTH] = {0}; /* collect remove fileds */
             int i = 0;
+            memset(send_cmd_ar, 0, sizeof(send_cmd_ar));
+            sprintf(send_cmd_ar, "hdel %s", cmd_p);
 
-            sprintf(cmd_ar, "hdel %s", cmd_p);
             for (i = 0; i < reply->elements; ++i) {
                 if (0 == (i%2)) {
-                    strcat(cmd_ar, reply->element[i]->str);
+                    strcat(send_cmd_ar, " ");
+                    strcat(send_cmd_ar, reply->element[i]->str);
                 }
-            }
+            }VLOG_INFO("send_cmd_ar: %s", send_cmd_ar);
             freeReplyObject(reply);
 
-            reply = redisCommand(c, "%s", cmd_ar);
+            reply = redisCommand(c, send_cmd_ar);
             if (NULL != reply) {
                 if (REDIS_REPLY_ERROR == reply->type) {
-                    VLOG_ERR("Failed cmd: %s error:%s\n", cmd_ar, reply->str);
+                    VLOG_ERR("Failed cmd: %s error:%s", send_cmd_ar, reply->str);
                 } else {
-                    VLOG_INFO("OK: %s\n", cmd_ar);
+                    VLOG_INFO("OK: %s", send_cmd_ar);
                 }
             }
             freeReplyObject(reply);
         }
 
         if (NULL != table_cmd_p) { /* remove table after removing ACE */
-            reply = redisCommand(c, "%s", table_cmd_p);
+            reply = redisCommand(c, table_cmd_p);
             if (NULL != reply) {
                 if (REDIS_REPLY_ERROR == reply->type) {
                     VLOG_ERR("Failed cmd: %s error:%s\n", table_cmd_p, reply->str);
