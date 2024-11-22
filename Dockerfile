@@ -16,7 +16,6 @@ COPY ./utilities/docker/debian/build-kernel-modules.sh /build-kernel-modules.sh
 RUN /build-kernel-modules.sh
 
 
-
 COPY ./start.sh /start.sh
 COPY ./port.sh /port.sh
 COPY ./vswitchd/vswitch.ovsschema /usr/share/openvswitch/vswitch.ovsschema
@@ -31,5 +30,4 @@ COPY ./utilities/docker/ovs-override.conf /etc/depmod.d/openvswitch.conf
 COPY ./utilities/docker/start-ovs /bin/start-ovs
 VOLUME ["/var/log/openvswitch", "/var/lib/openvswitch",\
  "/var/run/openvswitch", "/etc/openvswitch"]
-CMD ["/bin/bash", "/start.sh"]
-CMD ["tail", "-f", "/dev/null"]
+ENTRYPOINT ["/start.sh"]
