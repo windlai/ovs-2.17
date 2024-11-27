@@ -1078,8 +1078,6 @@ static int get_ifindex(const struct netdev *netdev_, int *ifindexp)
     char *netdev_name = netdev_get_name(netdev_);
     struct ifreq ifr;
     int error;
-
-    //fake test database ???
     int idx = 0;
 
     for (idx = 0; idx < NETDEV_SONIC_PORT_MAX_COUNT; idx++)

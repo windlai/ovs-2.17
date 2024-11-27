@@ -3,7 +3,7 @@ FROM debian:buster AS builder
 RUN apt-get update
 RUN apt-get install -y \
         apt-utils libelf-dev build-essential libssl-dev python3 \
-        gdb autoconf libtool git automake bzip2 dh-autoreconf openssl
+        gdb autoconf libtool git automake bzip2 dh-autoreconf openssl procps
 
 
 FROM builder AS build

@@ -207,7 +207,8 @@ static void dpif_sonic_construct_ace_set(const struct nlattr *key, size_t key_le
 static void dpif_sonic_construct_ace_unset(const struct nlattr *key, size_t key_len);
 static void dpif_sonic_print_flow(const struct nlattr *key, size_t key_len,
         const struct nlattr *mask, size_t mask_len, const struct nlattr *actions, size_t actions_len);
-static void connectRedis(char *table_cmd_p, char *cmd_p, int type);
+static void dpif_sonic_delete_redis_entry(redisContext *ctxt_p, char *name_p, char *send_cmd_ar);
+static void dpif_sonic_connect_redis(char *table_cmd_p, char *cmd_p, int type);
 
 
 const struct dpif_class dpif_sonic_class = {
@@ -1670,9 +1671,9 @@ static void dpif_sonic_construct_ace_set(const struct nlattr *key, size_t key_le
                     table_ar, port_ar, port_ar,
                     ((NETDEV_SONIC_REDIS_ACL_TABLE_TYPE_L3 == table_type) ? "L3" : "L3V6"));
             VLOG_INFO("%s %d. %s.", __FUNCTION__, __LINE__, table_cmd_ar);
-            connectRedis(table_cmd_ar, redis_cmd_ar, REDIS_CMD_TYPE_ADD);
+            dpif_sonic_connect_redis(table_cmd_ar, redis_cmd_ar, REDIS_CMD_TYPE_ADD);
         } else {
-            connectRedis(NULL, redis_cmd_ar, REDIS_CMD_TYPE_ADD);
+            dpif_sonic_connect_redis(NULL, redis_cmd_ar, REDIS_CMD_TYPE_ADD);
         }
 
         /* update store after REDIS
@@ -1752,9 +1753,9 @@ static void dpif_sonic_construct_ace_unset(const struct nlattr *key, size_t key_
 
             sprintf(table_cmd_ar, "HDEL %s policy_desc ports@ stage type", table_ar);
             VLOG_INFO("%s %d. %s.", __FUNCTION__, __LINE__, table_cmd_ar);
-            connectRedis(table_cmd_ar, ace_name_ar, REDIS_CMD_TYPE_REMOVE);
+            dpif_sonic_connect_redis(table_cmd_ar, ace_name_ar, REDIS_CMD_TYPE_REMOVE);
         } else {
-            connectRedis(NULL, ace_name_ar, REDIS_CMD_TYPE_REMOVE);
+            dpif_sonic_connect_redis(NULL, ace_name_ar, REDIS_CMD_TYPE_REMOVE);
         }
 
         /* update store after REDIS
@@ -1976,12 +1977,48 @@ static void dpif_sonic_print_flow(const struct nlattr *key, size_t key_len,
     }
 }
 
+static void dpif_sonic_delete_redis_entry(redisContext *ctxt_p, char *name_p, char *send_cmd_ar)
+{
+    redisReply *tmp_reply;
+
+    sprintf(send_cmd_ar, "hgetall %s", name_p);
+    VLOG_INFO("%s %d send_cmd_ar: %s", __FUNCTION__, __LINE__, send_cmd_ar);
+    tmp_reply = redisCommand(ctxt_p, send_cmd_ar);
+    if (REDIS_REPLY_ERROR == tmp_reply->type) {
+        VLOG_ERR("%s REDIS_REPLY_ERROR:%s", send_cmd_ar, tmp_reply->str);
+    } else if (REDIS_REPLY_ARRAY != tmp_reply->type) {
+        VLOG_ERR("%s ! REDIS_REPLY_ARRAY:%d", send_cmd_ar, tmp_reply->type);
+    } else {
+        int i = 0;
+        memset(send_cmd_ar, 0, sizeof(send_cmd_ar));
+        sprintf(send_cmd_ar, "hdel %s", name_p);
+
+        for (i = 0; i < tmp_reply->elements; ++i) {
+            if (0 == (i%2)) {
+                strcat(send_cmd_ar, " ");
+                strcat(send_cmd_ar, tmp_reply->element[i]->str);
+            }
+        }
+        freeReplyObject(tmp_reply);
+        VLOG_INFO("%s %d send_cmd_ar: %s", __FUNCTION__, __LINE__, send_cmd_ar);
+        tmp_reply = redisCommand(ctxt_p, send_cmd_ar);
+        if (NULL != tmp_reply) {
+            if (REDIS_REPLY_ERROR == tmp_reply->type) {
+                VLOG_ERR("Failed cmd: %s error:%s", send_cmd_ar, tmp_reply->str);
+            } else {
+                VLOG_INFO("OK: %s", send_cmd_ar);
+            }
+        }
+        freeReplyObject(tmp_reply);
+    }
+}
+
 /* arguments
  * cmd_p: command string for config DB; ACE name when removed
  * table_p: ACL table name
  * type: REDIS_CMD_TYPE_XXX
  */
-static void connectRedis(char *table_cmd_p, char *cmd_p, int type)
+static void dpif_sonic_connect_redis(char *table_cmd_p, char *cmd_p, int type)
 {
     struct timeval timeout = { 1, 500000 }; // 1.5 seconds
     redisReply *reply;
@@ -2028,36 +2065,7 @@ static void connectRedis(char *table_cmd_p, char *cmd_p, int type)
         /* remove: get all fileds to remove
          */
         char send_cmd_ar[REDIS_CMD_MAX_LENGTH] = {0};
-        sprintf(send_cmd_ar, "hgetall %s", cmd_p);
-        reply = redisCommand(c, send_cmd_ar);
-
-        if (REDIS_REPLY_ERROR == reply->type) {
-            VLOG_ERR("hgetall %s REDIS_REPLY_ERROR:%s", cmd_p, reply->str);
-        } else if (REDIS_REPLY_ARRAY != reply->type) {
-            VLOG_ERR("hgetall %s ! REDIS_REPLY_ARRAY:%d", cmd_p, reply->type);
-        } else {
-            int i = 0;
-            memset(send_cmd_ar, 0, sizeof(send_cmd_ar));
-            sprintf(send_cmd_ar, "hdel %s", cmd_p);
-
-            for (i = 0; i < reply->elements; ++i) {
-                if (0 == (i%2)) {
-                    strcat(send_cmd_ar, " ");
-                    strcat(send_cmd_ar, reply->element[i]->str);
-                }
-            }VLOG_INFO("send_cmd_ar: %s", send_cmd_ar);
-            freeReplyObject(reply);
-
-            reply = redisCommand(c, send_cmd_ar);
-            if (NULL != reply) {
-                if (REDIS_REPLY_ERROR == reply->type) {
-                    VLOG_ERR("Failed cmd: %s error:%s", send_cmd_ar, reply->str);
-                } else {
-                    VLOG_INFO("OK: %s", send_cmd_ar);
-                }
-            }
-            freeReplyObject(reply);
-        }
+        dpif_sonic_delete_redis_entry(c, cmd_p, send_cmd_ar);
 
         if (NULL != table_cmd_p) { /* remove table after removing ACE */
             reply = redisCommand(c, table_cmd_p);
@@ -2072,5 +2080,5 @@ static void connectRedis(char *table_cmd_p, char *cmd_p, int type)
         }
     }
 
-   redisFree(c);
+    redisFree(c);
 }
