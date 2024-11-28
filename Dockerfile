@@ -21,8 +21,9 @@ COPY ./utilities/docker/ovs-override.conf /etc/depmod.d/openvswitch.conf
 
 FROM debian:buster
 
-COPY --from=builder /usr/lib/x86_64-linux-gnu  /usr/lib/x86_64-linux-gnu
-COPY --from=builder /usr/lib  /usr/lib
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libssl.so.1.1  /usr/lib/x86_64-linux-gnu/libssl.so.1.1
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1  /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libatomic.so.1  /usr/lib/x86_64-linux-gnu/libatomic.so.1
 COPY --from=builder /usr/local/lib  /usr/local/lib
 COPY --from=builder /usr/local/sbin  /usr/local/sbin
 RUN /sbin/ldconfig

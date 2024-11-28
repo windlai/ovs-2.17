@@ -6,98 +6,56 @@
 Open vSwitch
 ============
 
-.. image:: https://github.com/openvswitch/ovs/workflows/Build%20and%20Test/badge.svg
-    :target: https://github.com/openvswitch/ovs/actions
-.. image:: https://travis-ci.org/openvswitch/ovs.png
-    :target: https://travis-ci.org/openvswitch/ovs
-.. image:: https://ci.appveyor.com/api/projects/status/github/openvswitch/ovs?branch=master&svg=true&retina=true
-    :target: https://ci.appveyor.com/project/blp/ovs/history
-.. image:: https://api.cirrus-ci.com/github/openvswitch/ovs.svg
-    :target: https://cirrus-ci.com/github/openvswitch/ovs
-
-What is Open vSwitch?
----------------------
-
-Open vSwitch is a multilayer software switch licensed under the open source
-Apache 2 license.  Our goal is to implement a production quality switch
-platform that supports standard management interfaces and opens the forwarding
-functions to programmatic extension and control.
-
-Open vSwitch is well suited to function as a virtual switch in VM environments.
-In addition to exposing standard control and visibility interfaces to the
-virtual networking layer, it was designed to support distribution across
-multiple physical servers.  Open vSwitch supports multiple Linux-based
-virtualization technologies including Xen/XenServer, KVM, and VirtualBox.
-
-The bulk of the code is written in platform-independent C and is easily ported
-to other environments.  The current release of Open vSwitch supports the
-following features:
-
-- Standard 802.1Q VLAN model with trunk and access ports
-- NIC bonding with or without LACP on upstream switch
-- NetFlow, sFlow(R), and mirroring for increased visibility
-- QoS (Quality of Service) configuration, plus policing
-- Geneve, GRE, VXLAN, STT, and LISP tunneling
-- 802.1ag connectivity fault management
-- OpenFlow 1.0 plus numerous extensions
-- Transactional configuration database with C and Python bindings
-- High-performance forwarding using a Linux kernel module
-
-The included Linux kernel module supports Linux 3.10 and up.
-
-Open vSwitch can also operate entirely in userspace without assistance from
-a kernel module.  This userspace implementation should be easier to port than
-the kernel-based switch. OVS in userspace can access Linux or DPDK devices.
-Note Open vSwitch with userspace datapath and non DPDK devices is considered
-experimental and comes with a cost in performance.
-
 What's here?
 ------------
 
 The main components of this distribution are:
 
-- ovs-vswitchd, a daemon that implements the switch, along with a companion
-  Linux kernel module for flow-based switching.
-- ovsdb-server, a lightweight database server that ovs-vswitchd queries to
-  obtain its configuration.
-- ovs-dpctl, a tool for configuring the switch kernel module.
-- Scripts and specs for building RPMs for Citrix XenServer and Red Hat
-  Enterprise Linux.  The XenServer RPMs allow Open vSwitch to be installed on a
-  Citrix XenServer host as a drop-in replacement for its switch, with
-  additional functionality.
-- ovs-vsctl, a utility for querying and updating the configuration of
-  ovs-vswitchd.
-- ovs-appctl, a utility that sends commands to running Open vSwitch daemons.
+- This branch is forked from openvswitch/ovs branch-2.17.
+- Target is that build a ovs docker and run in SONiC device.
+- To build the docker use the following command::
 
-Open vSwitch also provides some tools:
+   docker build -t openvswitch/ovs:2.17_debian --build-arg DISTRO=debian --progress=plain --no-cache -f Dockerfile .
 
-- ovs-ofctl, a utility for querying and controlling OpenFlow switches and
-  controllers.
-- ovs-pki, a utility for creating and managing the public-key infrastructure
-  for OpenFlow switches.
-- ovs-testcontroller, a simple OpenFlow controller that may be useful for
-  testing (though not for production).
-- A patch to tcpdump that enables it to parse OpenFlow messages.
+- The docker runs ovsdb-server and ovs-vswitchd in the same container.
+- When "docker stop *ovs*", automatically "ovs-ofctl del-flows *bridge*".
 
-What other documentation is available?
---------------------------------------
+Run the docker in SONiC::
 
-.. TODO(stephenfin): Update with a link to the hosting site of the docs, once
-   we know where that is
+   docker run --privileged -d -ti --net=host --name ovs openvswitch/ovs:2.17_debian
 
-To install Open vSwitch on a regular Linux or FreeBSD host, please read the
-`installation guide <Documentation/intro/install/general.rst>`__. For specifics
-around installation on a specific platform, refer to one of the `other
-installation guides <Documentation/intro/install/index.rst>`__
+Add SONiC Ethernet port to bridge, default bridge name is ovs-acl::
 
-For answers to common questions, refer to the `FAQ <Documentation/faq>`__.
+   docker exec ovs /port.sh
+   docker exec ovs /port.sh *bridge*
 
-To learn about some advanced features of the Open vSwitch software switch, read
-the `tutorial <Documentation/tutorials/ovs-advanced.rst>`__.
 
-Each Open vSwitch userspace program is accompanied by a manpage.  Many of the
-manpages are customized to your configuration as part of the build process, so
-we recommend building Open vSwitch before reading the manpages.
+SONiC supports flow field:
+
+- priofiry <1-10000>: priority of the same matched in_port should be different
+- matched in_port: a flow in SONiC must be specified with the field
+- matched dl_vlan with dl_type 0x8100: limit by SONiC ASCI, does not support mask
+- matched nw_src with dl_type 0x800: support mask
+- matched nw_dst with dl_type 0x800: support mask
+- matched nw_proto
+- matched tp_src
+- matched tp_dst
+- matched icmp_type: include IPv6
+- matched icmp_code: include IPv6
+- matched ipv6_src with dl_type 0x86dd
+- matched ipv6_dst with dl_type 0x86dd
+- action dop
+- action output: redirect to a single port
+
+SONiC flow example::
+
+   docker exec ovs ovs-ofctl add-flow wind priority=1,in_port=1,dl_type=0x8100,dl_vlan=777,actions=output:3
+   docker exec ovs ovs-ofctl add-flow wind priority=2,in_port=1,dl_type=0x800,nw_src=192.168.100.1/24,nw_dst=192.168.100.2,actions=drop
+   docker exec ovs ovs-ofctl add-flow wind priority=3,in_port=1,dl_type=0x800,nw_proto=17,tp_src=53,tp_dst=54,actions=2
+   docker exec ovs ovs-ofctl add-flow wind priority=4,in_port=1,dl_type=0x800,nw_proto=1,icmp_type=8,icmp_code=0,actions=drop
+   docker exec ovs ovs-ofctl add-flow wind priority=5,in_port=1,dl_type=0x86dd,nw_proto=58,icmp_type=8,icmp_code=0,actions=output:3
+   docker exec ovs ovs-ofctl add-flow wind priority=6,in_port=1,dl_type=0x86dd,ipv6_src=2001::1,ipv6_dst=2001::2/64,actions=drop
+
 
 License
 -------
