@@ -30,7 +30,10 @@ RUN /sbin/ldconfig
 
 COPY --from=builder /start.sh /start.sh
 COPY --from=builder /port.sh /port.sh
-COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /usr/local/bin/ovs-ofctl  /usr/local/bin/ovs-ofctl
+COPY --from=builder /usr/local/bin/ovs-vsctl  /usr/local/bin/ovs-vsctl
+COPY --from=builder /usr/local/bin/ovsdb-client  /usr/local/bin/ovsdb-client
+COPY --from=builder /usr/local/bin/ovsdb-tool  /usr/local/bin/ovsdb-tool
 COPY --from=builder /usr/share/openvswitch/vswitch.ovsschema /usr/share/openvswitch/vswitch.ovsschema
 COPY --from=builder /etc/openvswitch/create_ovs_db.sh /etc/openvswitch/create_ovs_db.sh
 RUN /etc/openvswitch/create_ovs_db.sh

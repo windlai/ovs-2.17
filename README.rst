@@ -12,7 +12,7 @@ What's here?
 The main components of this distribution are:
 
 - This branch is forked from openvswitch/ovs branch-2.17.
-- Target is that build a ovs docker and run in SONiC device.
+- Target is that build a ovs docker and run on SONiC device.
 - To build the docker use the following command::
 
    docker build -t openvswitch/ovs:2.17_debian --build-arg DISTRO=debian --progress=plain --no-cache -f Dockerfile .
@@ -27,6 +27,7 @@ Run the docker in SONiC::
 Add SONiC Ethernet port to bridge, default bridge name is ovs-acl::
 
    docker exec ovs /port.sh
+   or
    docker exec ovs /port.sh *bridge*
 
 
@@ -90,7 +91,3 @@ Sun Industry Standards Source License 1.1, that is available at:
 or the InMon sFlow License, that is available at:
         http://www.inmon.com/technology/sflowlicense.txt
 
-Contact
--------
-
-bugs@openvswitch.org
