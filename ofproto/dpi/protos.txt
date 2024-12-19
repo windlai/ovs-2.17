@@ -1,0 +1,29 @@
+#  Format:
+#  <tcp|udp>:<port>,<tcp|udp>:<port>,.....@<proto>
+
+tcp:81,tcp:8181@HTTP
+udp:5062@SIP
+tcp:860,udp:860,tcp:3260,udp:3260@iSCSI
+tcp:3000@ntop
+tcp:9002@Elasticsearch
+tcp:9200@Elasticsearch
+tcp:5601@Kibana
+tcp:65535@TestProto
+
+#  Subprotocols
+#  Format:
+#  host:"<value>",host:"<value>",.....@<subproto>
+
+host:"googlesyndacation.com"@Google
+host:"venere.com"@Venere
+host:"kataweb.it",host:"repubblica.it"@Repubblica
+host:"aricent.com"@Aricent
+host:"facebook.com"@Facebook
+host:"youtube.com"@Youtube
+host:"yahoo.com"@Yahoo
+host:"disneyplus.com",host:"cdn.registerdisney.go.com",host:"disney-portal.my.onetrust.com",host:"disneyplus.bn5x.net",host:"disney-plus.net"@DisneyPlus
+host:"*.lvlt.dash.us.aiv-cdn.net.c.footprint.net"@AmazonVideo
+host:"api-global.netflix.com"@Netflix
+
+
+

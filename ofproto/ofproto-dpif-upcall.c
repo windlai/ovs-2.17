@@ -46,6 +46,9 @@
 #include "openvswitch/vlog.h"
 #include "lib/netdev-provider.h"
 
+/* DPI special interface [kspviswa] */
+#include "dpi/dpi-interface.h"
+
 #define UPCALL_MAX_BATCH 64
 #define REVALIDATE_MAX_BATCH 50
 #define UINT64_THREE_QUARTERS (UINT64_MAX / 4 * 3)
@@ -1703,6 +1706,15 @@ handle_upcalls(struct udpif *udpif, struct upcall *upcalls,
         struct upcall *upcall = &upcalls[i];
         const struct dp_packet *packet = upcall->packet;
         struct ukey_op *op;
+
+        /**
+         * DPI Processing - kspviswa
+         */
+        //if(upcall->type == MISS_UPCALL)
+        {
+        	VLOG_INFO("[kspviswa] packet arrived for DPI :-) ");
+        	dpiProcessPacket(dp_packet_data(packet), packet->size_);
+        }
 
         if (should_install_flow(udpif, upcall)) {
             struct udpif_key *ukey = upcall->ukey;

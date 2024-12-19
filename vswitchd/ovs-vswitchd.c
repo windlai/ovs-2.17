@@ -53,6 +53,7 @@
 #include "openvswitch/vlog.h"
 #include "lib/vswitch-idl.h"
 #include "lib/dns-resolve.h"
+#include "../ofproto/dpi/dpi-interface.h"
 
 VLOG_DEFINE_THIS_MODULE(vswitchd);
 
@@ -119,7 +120,7 @@ main(int argc, char *argv[])
     }
     unixctl_command_register("exit", "[--cleanup]", 0, 1,
                              ovs_vswitchd_exit, NULL);
-
+    dpiInit();
     bridge_init(remote);
     free(remote);
 
@@ -159,6 +160,7 @@ main(int argc, char *argv[])
     free(exit_args.conns);
 
     unixctl_server_destroy(unixctl);
+    dpiExit();
     service_stop();
     vlog_disable_async();
     ovsrcu_exit();

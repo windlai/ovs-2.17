@@ -9,7 +9,7 @@ lib_LTLIBRARIES += ofproto/libofproto.la
 ofproto_libofproto_la_LDFLAGS = \
         $(OVS_LTINFO) \
         -Wl,--version-script=$(top_builddir)/ofproto/libofproto.sym \
-        $(AM_LDFLAGS)
+        $(AM_LDFLAGS) -ldl
 ofproto_libofproto_la_SOURCES = \
 	ofproto/bond.c \
 	ofproto/bond.h \
@@ -49,6 +49,8 @@ ofproto_libofproto_la_SOURCES = \
 	ofproto/ofproto-provider.h \
 	ofproto/ofproto-dpif-xlate-cache.c \
 	ofproto/ofproto-dpif-xlate-cache.h \
+	ofproto/dpi/dpi_engine.c \
+	ofproto/dpi/dpiEnginenDPI.c \
 	ofproto/pinsched.c \
 	ofproto/pinsched.h \
 	ofproto/tunnel.c \
@@ -56,8 +58,10 @@ ofproto_libofproto_la_SOURCES = \
 	ofproto/bundles.c \
 	ofproto/bundles.h
 
-ofproto_libofproto_la_CPPFLAGS = $(AM_CPPFLAGS)
-ofproto_libofproto_la_CFLAGS = $(AM_CFLAGS)
+ofproto_libofproto_la_CPPFLAGS = $(AM_CPPFLAGS) -I $(top_builddir)/libndpi-1.6.0/libndpi
+ofproto_libofproto_la_CPPFLAGS += -I /usr/local/include/libndpi-1.6.0/libndpi -ljson-c -lcurl -lndpi -l:librdkafka.a -lz -lcrypto -lssl -lm
+ofproto_libofproto_la_CFLAGS = $(AM_CFLAGS) -I $(top_builddir)/libndpi-1.6.0/libndpi
+ofproto_libofproto_la_CFLAGS += -I /usr/local/include/libndpi-1.6.0/libndpi -ljson-c -lcurl -lndpi -l:librdkafka.a -lz -lcrypto -lssl -lm
 ofproto_libofproto_la_LIBADD = lib/libsflow.la
 if WIN32
 ofproto_libofproto_la_LIBADD += ${PTHREAD_LIBS}
