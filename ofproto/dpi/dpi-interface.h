@@ -20,11 +20,13 @@
 
 
 // library init
-void dpiInit(void);
+//sampleIp: X.X.X.X
+//kafkaBroker: X.X.X.X:port
+void dpiInit(char *sampleIp, char *kafkaBroker);
 
 // Process ethernet packet for DPI
 // DPI implementing library should convert the void *packet to ethernet packet
-uint32_t dpiProcessPacket(void *packet, uint32_t nSize);
+uint32_t dpiProcessPacket(void *packet, uint32_t nSize, int inPort);
 
 // library exit
 void dpiExit(void);

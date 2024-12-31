@@ -29,6 +29,7 @@
 #include <pcap.h>
 #include <signal.h>
 #include <pthread.h>
+#include <time.h>
 
 //#include "../config.h"
 
@@ -44,14 +45,20 @@
 #include <librdkafka/rdkafka.h>
 
 #include <sys/socket.h>
+#include <arpa/inet.h>
 #include "openvswitch/vlog.h"
+#include <protobuf-c/protobuf-c.h>
+#include "flow.pb-c.h"
 
 
 VLOG_DEFINE_THIS_MODULE(dpiEnginenDPI);
 
 char *szProto = "./proto.txt";
-char *kafka_broker = "192.168.254.232:9092";
+//max len: "xxx.xxx.xxx.xxx:xxxxx"
+char kafka_broker[22] = {0};
+char kafka_sampler[22] = {0};
 char *kafka_topic_str = "flows";
+
 
 /**
  * Detection parameters
@@ -67,6 +74,10 @@ static uint32_t full_http_dissection = 1; /* enabling http dissection by default
 #define IDLE_SCAN_BUDGET         1024
 
 #define NUM_ROOTS                 512
+
+//#define KAFKA_BROKER_DEFAULT     "localhost:9092"
+//#define KAFKA_SAMPLER_DEFAULT     "127.0.0.1"
+
 
 //static uint32_t num_flows;
 static uint32_t ndpi_flow_count;
@@ -123,31 +134,11 @@ struct curl_fetch_st {
     size_t size;
 };
 
-enum FlowType {
-    FLOWUNKNOWN = 0;
-    SFLOW_5 = 1;
-    NETFLOW_V5 = 2;
-    NETFLOW_V9 = 3;
-    IPFIX = 4;
-}
-
-struct protobuf_flow {
-    FlowType type;
-
-    uint32 etype;  // Layer 3 protocol (IPv4/IPv6/ARP/MPLS...)
-    uint32 proto;  // Layer 4 protocol
-    uint32 src_port;  // Ports for UDP and TCP
-    uint32 dst_port;
-    uint64 src_mac;
-    uint64 dst_mac;
-    uint32 vlan_id;
-};
 
 static uint32_t size_flow_struct = 0;
 static rd_kafka_t *kafka_producer;
 static rd_kafka_conf_t *kafka_conf;
 static rd_kafka_topic_t *kafka_topic;
-//static rd_kafka_topic_conf_t *kafka_topic_conf;
 
 
 size_t curl_callback (void *contents, size_t size, size_t nmemb, void *userp);
@@ -261,8 +252,7 @@ static void kafka_init(void)
     // Client request timeout (in milliseconds), with the default value being 5000.
     rd_kafka_conf_set(kafka_conf, "request.timeout.ms", "5000", NULL, 0);
     // Set ack to 1, indicating that the message is considered successfully sent once the leader replica receives it.
-    rd_kafka_conf_set(kafka_conf, "acks", "1", NULL, 0);
-
+    rd_kafka_conf_set(kafka_conf, "client.id", "rdkafka", NULL, 0);
 
     /* callback function
      * every response from rd_kafka_produce()
@@ -275,7 +265,6 @@ static void kafka_init(void)
     if (!kafka_producer)
     {
         VLOG_ERR("Failed to create new producer: %s", errstr);
-        kafka_conf = NULL;
         return;
     }
 
@@ -294,13 +283,13 @@ static void kafka_destroy(void)
     rd_kafka_destroy(kafka_producer);
 }
 
-static void kafka_send(const char *buffer, const int buff_len)
+static void kafka_send(void *buffer, const int buff_len)
 {
     int ret = 0;
     ret = rd_kafka_produce(kafka_topic, RD_KAFKA_PARTITION_UA, RD_KAFKA_MSG_F_COPY,
-            (void *)buffer, (size_t)buff_len, NULL, 0, NULL);
+            buffer, (size_t)buff_len, NULL, 0, NULL);
     if (-1 == ret) {
-        VLOG_ERR("Failed to produce to topic: %s", rd_kafka_err2str(errno));
+        VLOG_ERR("Failed to produce to topic: %s", rd_kafka_err2str(rd_kafka_last_error()));
         return;
     }
 
@@ -312,7 +301,68 @@ static void kafka_send(const char *buffer, const int buff_len)
     VLOG_INFO("Sent %d bytes to topic %s", buff_len, kafka_topic_str);
 }
 
-int engine_init(void)
+static void kafka_construct_and_send(struct ndpi_flow *flow, int inPort)
+{
+    Flowpb__FlowMessage msg = FLOWPB__FLOW_MESSAGE__INIT;
+    char *buf = NULL;
+    int len = 0;
+    struct in_addr inaddr;
+    struct timespec timespec;
+    long ns = 0;
+    char *app_proto = ndpi_get_proto_name(ndpi_struct, flow->detected_protocol);
+
+    clock_gettime(CLOCK_REALTIME, &timespec);
+    ns = (timespec.tv_sec * 1000000000UL + timespec.tv_nsec);
+    memset(&inaddr, 0, sizeof(inaddr));
+    inet_aton(kafka_sampler, &inaddr);
+
+    msg.type = FLOWPB__FLOW_MESSAGE__FLOW_TYPE__NDPI;
+    //msg.sampling_rate = 0;
+    //msg.sequence_num = 0;
+    msg.src_addr.len = sizeof(flow->lower_ip);
+    msg.src_addr.data = calloc(1, msg.src_addr.len);
+    memcpy(msg.src_addr.data, &(flow->lower_ip), msg.src_addr.len);
+    msg.dst_addr.len = sizeof(flow->upper_ip);
+    msg.dst_addr.data = calloc(1, msg.dst_addr.len);
+    memcpy(msg.dst_addr.data, &(flow->upper_ip), msg.dst_addr.len);
+    msg.bytes = flow->bytes;
+    msg.packets = flow->packets;
+    msg.sampler_address.len = sizeof(inaddr.s_addr);
+    msg.sampler_address.data = calloc(1, msg.sampler_address.len);
+    strncpy(msg.sampler_address.data, &inaddr.s_addr, msg.sampler_address.len);
+    msg.in_if = inPort;
+    //msg.out_if = 2;
+    msg.proto = flow->protocol; //string:ipProto2Name(flow->protocol)
+    msg.src_port = ntohs(flow->lower_port);
+    msg.dst_port = ntohs(flow->upper_port);
+    //msg.etype = 2048;
+    msg.time_received_ns = ns;
+    msg.time_flow_start_ns = ns;
+    msg.time_flow_end_ns = ns;
+    msg.app_proto.len = strlen(app_proto);
+    msg.app_proto.data = calloc(1, msg.app_proto.len);
+    strncpy(msg.app_proto.data, app_proto, msg.app_proto.len);
+
+    len = flowpb__flow_message__get_packed_size(&msg);
+    buf = malloc(len+1);
+    buf[0] = len;
+    flowpb__flow_message__pack(&msg, buf+1);
+
+    if (127 >= len) {
+        kafka_send((void *)buf, len+1);
+        VLOG_INFO("%s, %d len:%d msg.in_if:%d %s.\n", __FUNCTION__, __LINE__, len, msg.in_if, msg.app_proto.data);
+    } else {
+        VLOG_ERR("%s, %d cannot send len:%d now\n", __FUNCTION__, __LINE__, len);
+    }
+
+    free(buf);
+    free(msg.sampler_address.data);
+    free(msg.src_addr.data);
+    free(msg.dst_addr.data);
+    free(msg.app_proto.data);
+}
+
+int engine_init(char *sampleIp, char *kafkaBroker)
 {
     NDPI_PROTOCOL_BITMASK all;
     ndpi_struct = ndpi_init_detection_module(detection_tick_resolution,
@@ -331,6 +381,9 @@ int engine_init(void)
     //ndpi_load_protocols_file(ndpi_struct, szProto);
 
     jArray_flows = json_object_new_array();
+
+    strncpy(kafka_broker, kafkaBroker, strlen(kafkaBroker));
+    strncpy(kafka_sampler, sampleIp, strlen(sampleIp));
     kafka_init();
 
     return 0;
@@ -513,8 +566,8 @@ static void printFlow(struct ndpi_flow *flow) {
 
     VLOG_INFO("\t%s %s:%u <-> %s:%u ",
     ipProto2Name(flow->protocol),
-    flow->lower_name, ntohs(flow->lower_port),
-    flow->upper_name, ntohs(flow->upper_port));
+            flow->lower_name, ntohs(flow->lower_port),
+            flow->upper_name, ntohs(flow->upper_port));
 
     if(flow->vlan_id > 0) VLOG_INFO("[VLAN: %u]", flow->vlan_id);
 
@@ -793,7 +846,7 @@ static unsigned int packet_processing(const uint64_t time,
         uint16_t vlan_id,
         const struct ndpi_iphdr *iph,
         uint16_t ip_offset,
-        uint16_t ipsize, uint16_t rawsize) {
+        uint16_t ipsize, uint16_t rawsize, int inPort) {
     struct ndpi_id_struct *src, *dst;
     struct ndpi_flow *flow;
     struct ndpi_flow_struct *ndpi_flow = NULL;
@@ -861,7 +914,7 @@ static unsigned int packet_processing(const uint64_t time,
 			VLOG_INFO("[Method] %s\n", method);
 		}
 
-		free_ndpi_flow(flow);
+        kafka_construct_and_send(flow, inPort);
 
         /*if(verbose > 1) {
             if(enable_protocol_guess) {
@@ -871,6 +924,7 @@ static unsigned int packet_processing(const uint64_t time,
         }*/
 
 		printFlow(flow);
+        free_ndpi_flow(flow);
 
 
 
@@ -900,7 +954,7 @@ static unsigned int packet_processing(const uint64_t time,
 
 /* ****************************************************** */
 
-int engine_process(void *packet, uint32_t nSize)
+int engine_process(void *packet, uint32_t nSize, int inPort)
 {
     //const struct ndpi_ethhdr *ethernet;
     struct ndpi_iphdr *iph;
@@ -931,7 +985,7 @@ int engine_process(void *packet, uint32_t nSize)
 
 
     // process the packet
-    packet_processing(time, vlan_id, iph, ip_offset, (nSize - ip_offset), nSize);
+    packet_processing(time, vlan_id, iph, ip_offset, (nSize - ip_offset), nSize, inPort);
 
     return 1;
 }

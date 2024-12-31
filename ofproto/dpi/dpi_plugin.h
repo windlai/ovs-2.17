@@ -14,8 +14,8 @@ typedef unsigned short uint16_t;
 typedef unsigned char uint8_t;
 
 
-int engine_init(void);
+int engine_init(char *sampleIp, char *kafkaBroker);
 int engine_destroy(void);
-int engine_process(void *packet, uint32_t nSize);
+int engine_process(void *packet, uint32_t nSize, int inPort);
 
 #endif /* DPI_PLUGIN_H_ */

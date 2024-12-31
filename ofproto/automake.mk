@@ -51,6 +51,7 @@ ofproto_libofproto_la_SOURCES = \
 	ofproto/ofproto-dpif-xlate-cache.h \
 	ofproto/dpi/dpi_engine.c \
 	ofproto/dpi/dpiEnginenDPI.c \
+	ofproto/dpi/flow.pb-c.c \
 	ofproto/pinsched.c \
 	ofproto/pinsched.h \
 	ofproto/tunnel.c \
@@ -59,9 +60,9 @@ ofproto_libofproto_la_SOURCES = \
 	ofproto/bundles.h
 
 ofproto_libofproto_la_CPPFLAGS = $(AM_CPPFLAGS) -I $(top_builddir)/libndpi-1.6.0/libndpi
-ofproto_libofproto_la_CPPFLAGS += -I /usr/local/include/libndpi-1.6.0/libndpi -ljson-c -lcurl -lndpi -l:librdkafka.a -lz -lcrypto -lssl -lm
+ofproto_libofproto_la_CPPFLAGS += -I /usr/local/include/libndpi-1.6.0/libndpi -ljson-c -lcurl -lndpi -l:librdkafka.a -lz -lcrypto -lssl -lm -lprotobuf-c
 ofproto_libofproto_la_CFLAGS = $(AM_CFLAGS) -I $(top_builddir)/libndpi-1.6.0/libndpi
-ofproto_libofproto_la_CFLAGS += -I /usr/local/include/libndpi-1.6.0/libndpi -ljson-c -lcurl -lndpi -l:librdkafka.a -lz -lcrypto -lssl -lm
+ofproto_libofproto_la_CFLAGS += -I /usr/local/include/libndpi-1.6.0/libndpi -ljson-c -lcurl -lndpi -l:librdkafka.a -lz -lcrypto -lssl -lm -lprotobuf-c
 ofproto_libofproto_la_LIBADD = lib/libsflow.la
 if WIN32
 ofproto_libofproto_la_LIBADD += ${PTHREAD_LIBS}

@@ -16,19 +16,18 @@
 //Register this module
 VLOG_DEFINE_THIS_MODULE(dpi_engine);
 
-//Globals
-void *dpiLib = NULL;
 
-void dpiInit(void)
+void dpiInit(char *sampleIp, char *kafkaBroker)
 {
 	VLOG_DBG("%s %d", __FUNCTION__, __LINE__);
-	engine_init();VLOG_INFO("%s %d", __FUNCTION__, __LINE__);
+	VLOG_INFO("%s %d sampleIp:%s, kafkaBroker:%s.",  __FUNCTION__, __LINE__, sampleIp, kafkaBroker);
+	engine_init(sampleIp, kafkaBroker);
 }
 
-uint32_t dpiProcessPacket(void *packet, uint32_t nSize)
+uint32_t dpiProcessPacket(void *packet, uint32_t nSize, int inPort)
 {
 	VLOG_DBG("%s %d", __FUNCTION__, __LINE__);
-	return engine_process(packet, nSize);
+	return engine_process(packet, nSize, inPort);
 }
 
 void dpiExit(void)

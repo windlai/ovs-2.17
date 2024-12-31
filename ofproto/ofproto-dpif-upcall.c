@@ -1713,7 +1713,7 @@ handle_upcalls(struct udpif *udpif, struct upcall *upcalls,
         //if(upcall->type == MISS_UPCALL)
         {
         	VLOG_INFO("[kspviswa] packet arrived for DPI :-) ");
-        	dpiProcessPacket(dp_packet_data(packet), packet->size_);
+        	dpiProcessPacket(dp_packet_data(packet), packet->size_, upcall->ofp_in_port);
         }
 
         if (should_install_flow(udpif, upcall)) {

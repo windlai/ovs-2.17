@@ -84,6 +84,7 @@ main(int argc, char *argv[])
     char *unixctl_path = NULL;
     char *remote;
     int retval;
+    bool kafka_enabled = false;
 
     set_program_name(argv[0]);
     ovsthread_id_init();
@@ -120,7 +121,17 @@ main(int argc, char *argv[])
     }
     unixctl_command_register("exit", "[--cleanup]", 0, 1,
                              ovs_vswitchd_exit, NULL);
-    dpiInit();
+
+    {
+        char *kafka_sampler = getenv("KAFKA_SAMPLER");
+        char *kafka_broker = getenv("KAFKA_BROKER");
+
+        if ((NULL != kafka_sampler) && (NULL != kafka_broker)) {
+            kafka_enabled = true;
+            dpiInit(kafka_sampler, kafka_broker);
+        }
+    }
+
     bridge_init(remote);
     free(remote);
 
@@ -160,7 +171,11 @@ main(int argc, char *argv[])
     free(exit_args.conns);
 
     unixctl_server_destroy(unixctl);
-    dpiExit();
+
+    if (kafka_enabled) {
+        dpiExit();
+    }
+
     service_stop();
     vlog_disable_async();
     ovsrcu_exit();
