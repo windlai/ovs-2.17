@@ -1707,15 +1707,6 @@ handle_upcalls(struct udpif *udpif, struct upcall *upcalls,
         const struct dp_packet *packet = upcall->packet;
         struct ukey_op *op;
 
-        /**
-         * DPI Processing - kspviswa
-         */
-        //if(upcall->type == MISS_UPCALL)
-        {
-        	VLOG_INFO("[kspviswa] packet arrived for DPI :-) ");
-        	dpiProcessPacket(dp_packet_data(packet), packet->size_, upcall->ofp_in_port);
-        }
-
         if (should_install_flow(udpif, upcall)) {
             struct udpif_key *ukey = upcall->ukey;
 
@@ -1726,6 +1717,30 @@ handle_upcalls(struct udpif *udpif, struct upcall *upcalls,
         }
 
         if (upcall->odp_actions.size) {
+            struct nlattr *a;
+            int left;
+
+            NL_ATTR_FOR_EACH (a, left, upcall->odp_actions.data, upcall->odp_actions.size) {
+                int attr_type = nl_attr_type(a);
+                switch(attr_type) {
+                    case OVS_USERSPACE_ATTR_USERDATA: {
+                        const struct nlattr *userdata = nl_attr_find_nested(a, OVS_USERSPACE_ATTR_USERDATA);
+                        struct user_action_cookie *cookie = &(upcall->cookie);
+
+                        memcpy(cookie, nl_attr_get(userdata), sizeof *cookie);
+                        if (cookie->type == USER_ACTION_COOKIE_CONTROLLER) {
+                            VLOG_INFO("USER_ACTION_COOKIE_CONTROLLER [kspviswa] packet arrived for DPI :-)");
+                            dpiProcessPacket(dp_packet_data(packet), packet->size_, upcall->ofp_in_port);
+                        }
+                        break;
+                    }
+                    default:
+                        VLOG_INFO("%s %d attr_type:%d.", __FUNCTION__, __LINE__, attr_type);
+                        break;
+                }
+
+            }
+
             op = &ops[n_ops++];
             op->ukey = NULL;
             op->dop.type = DPIF_OP_EXECUTE;

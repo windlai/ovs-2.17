@@ -6,94 +6,37 @@
 Open vSwitch
 ============
 
-.. image:: https://github.com/openvswitch/ovs/workflows/Build%20and%20Test/badge.svg
-    :target: https://github.com/openvswitch/ovs/actions
-.. image:: https://ci.appveyor.com/api/projects/status/github/openvswitch/ovs?branch=main&svg=true&retina=true
-    :target: https://ci.appveyor.com/project/blp/ovs/history
-.. image:: https://api.cirrus-ci.com/github/openvswitch/ovs.svg
-    :target: https://cirrus-ci.com/github/openvswitch/ovs
-.. image:: https://readthedocs.org/projects/openvswitch/badge/?version=latest
-    :target: https://docs.openvswitch.org/en/latest/
-
-What is Open vSwitch?
----------------------
-
-Open vSwitch is a multilayer software switch licensed under the open source
-Apache 2 license.  Our goal is to implement a production quality switch
-platform that supports standard management interfaces and opens the forwarding
-functions to programmatic extension and control.
-
-Open vSwitch is well suited to function as a virtual switch in VM environments.
-In addition to exposing standard control and visibility interfaces to the
-virtual networking layer, it was designed to support distribution across
-multiple physical servers.  Open vSwitch supports multiple Linux-based
-virtualization technologies including KVM, and VirtualBox.
-
-The bulk of the code is written in platform-independent C and is easily ported
-to other environments.  The current release of Open vSwitch supports the
-following features:
-
-- Standard 802.1Q VLAN model with trunk and access ports
-- NIC bonding with or without LACP on upstream switch
-- NetFlow, sFlow(R), and mirroring for increased visibility
-- QoS (Quality of Service) configuration, plus policing
-- Geneve, GRE, VXLAN, STT, ERSPAN, GTP-U, SRv6, Bareudp, and LISP tunneling
-- 802.1ag connectivity fault management
-- OpenFlow 1.0 plus numerous extensions
-- Transactional configuration database with C and Python bindings
-- High-performance forwarding using a Linux kernel module
-
-Open vSwitch can also operate entirely in userspace without assistance from
-a kernel module.  This userspace implementation should be easier to port than
-the kernel-based switch. OVS in userspace can access Linux or DPDK devices.
-Note Open vSwitch with userspace datapath and non DPDK devices is considered
-experimental and comes with a cost in performance.
 
 What's here?
 ------------
 
 The main components of this distribution are:
 
-- ovs-vswitchd, a daemon that implements the switch, along with a companion
-  Linux kernel module for flow-based switching.
-- ovsdb-server, a lightweight database server that ovs-vswitchd queries to
-  obtain its configuration.
-- ovs-dpctl, a tool for configuring the switch kernel module.
-- Scripts and specs for building RPMs for Red Hat Enterprise Linux and
-  deb packages for Ubuntu/Debian.
-- ovs-vsctl, a utility for querying and updating the configuration of
-  ovs-vswitchd.
-- ovs-appctl, a utility that sends commands to running Open vSwitch daemons.
+- When packet is upcall with action output to controller, send the packet to nDPI.
+- After nDPI parsing, sends parsed APP protocol (Facebook, FTP, Youtube, etc.) to specified KAFAK.
+- The KAFKA server should be launched with `goflow2 <https://github.com/nocsysmonitor/goflow2>`__ environment.
 
-Open vSwitch also provides some tools:
 
-- ovs-ofctl, a utility for querying and controlling OpenFlow switches and
-  controllers.
-- ovs-pki, a utility for creating and managing the public-key infrastructure
-  for OpenFlow switches.
-- ovs-testcontroller, a simple OpenFlow controller that may be useful for
-  testing (though not for production).
-- A patch to tcpdump that enables it to parse OpenFlow messages.
-
-What other documentation is available?
+Test procedure
 --------------------------------------
 
-.. TODO(stephenfin): Update with a link to the hosting site of the docs, once
-   we know where that is
+- Export related KAFKA variable before starting ovs-vswitchd::
 
-To install Open vSwitch on a regular Linux or FreeBSD host, please read the
-`installation guide <Documentation/intro/install/general.rst>`__. For specifics
-around installation on a specific platform, refer to one of the `other
-installation guides <Documentation/intro/install/index.rst>`__
+   export KAFKA_SAMPLER=192.168.254.232
+   export KAFKA_BROKER=192.168.254.232:9092
 
-For answers to common questions, refer to the `FAQ <Documentation/faq>`__.
+- Start ovs and add bridge/ports::
 
-To learn about some advanced features of the Open vSwitch software switch, read
-the `tutorial <Documentation/tutorials/ovs-advanced.rst>`__.
+   ovs-ctl start
+   ovs-vsctl add-br br0
+   ovs-vsctl add-port br0 veth_l0
+   ip link set veth_l0 up
 
-Each Open vSwitch userspace program is accompanied by a manpage.  Many of the
-manpages are customized to your configuration as part of the build process, so
-we recommend building Open vSwitch before reading the manpages.
+- Add a flow with action output to controller::
+
+   ovs-ofctl add-flow br0 priority=2,in_port=1,dl_type=0x800,nw_dst=192.168.40.136,actions=controller
+
+- Inject a packet matched the flow, and check result of KAFKA/clickhouse.
 
 License
 -------
@@ -125,7 +68,4 @@ Sun Industry Standards Source License 1.1, that is available at:
 or the InMon sFlow License, that is available at:
         http://www.inmon.com/technology/sflowlicense.txt
 
-Contact
--------
 
-bugs@openvswitch.org
