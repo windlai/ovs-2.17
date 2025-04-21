@@ -660,6 +660,7 @@ dpif_sonic_port_poll(const struct dpif *dpif_, char **devnamep)
 static void
 dpif_sonic_port_poll_wait(const struct dpif *dpif_)
 {
+}
 
 static bool dpif_sonic_port_valid_flow_priority(struct dpif *dpif,
                     odp_port_t port_no, int priority)

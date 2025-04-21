@@ -4893,7 +4893,6 @@ flow_mod_impl_add(const struct ofproto *ofproto_, int priority,
     op.flow_put.ufid = NULL;
     op.flow_put.pmd_id = PMD_ID_NULL;
     op.flow_put.stats = NULL;
-    }
 
     opp = &op;
 
